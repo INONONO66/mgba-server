@@ -229,7 +229,7 @@ describe('InstanceManager', () => {
   it('enforces the configured maximum instance count', async () => {
     const manager = new InstanceManager(createConfig(), new Map())
 
-    for (let count = 0; count < 10; count += 1) {
+    for (let count = 0; count < 20; count += 1) {
       await manager.create()
     }
 
@@ -319,7 +319,7 @@ function createConfig(): Config {
   return {
     port: 8787,
     adminToken: 'admin-token',
-    maxInstances: 10,
+    maxInstances: 20,
     emulatorImage: 'grokemon-emulator',
     emulatorPort: 8888,
     emulatorMemoryBytes: 805_306_368,
