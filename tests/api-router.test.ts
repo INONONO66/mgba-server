@@ -1,9 +1,15 @@
 import { Hono } from 'hono'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createApiRouter, createV2ApiRouter, type InstanceRegistry } from '../src/gateway/ApiRouter.js'
+import {
+  PrincipalAccessControl,
+  createApiRouter,
+  createV2ApiRouter,
+  type InstanceRegistry,
+} from '../src/gateway/ApiRouter.js'
 import { MgbaSocketClient } from '../src/mgba/MgbaSocketClient.js'
 import { formatMessage, SUCCESS_MARKER } from '../src/mgba/protocol.js'
+import { InputLogBus } from '../src/streaming/InputLog.js'
 
 const REST_CAPTURE_OPEN_CALL = /^open:\/tmp\/grokemon-captures-test\/instance-1\/rest-capture\.png:\d+$/
 
@@ -238,6 +244,69 @@ describe('createApiRouter', () => {
     expect(fixture.messages).toEqual([socketMessage])
   })
 
+  it('logs v2 input actors by principal id without leaking bearer tokens', async () => {
+    const inputLog = new InputLogBus()
+    const socketMessage = formatMessage('mgba-http.button.tap', 'A')
+    const fixture = createFixture(new Map([[socketMessage, SUCCESS_MARKER]]), {
+      includeV2: true,
+      inputLog,
+    })
+
+    const response = await fixture.app.request('/api/v2/sessions/instance-1/mgba-http/button/tap?button=A', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    })
+
+    expect(response.status).toBe(200)
+    const controlEventId = response.headers.get('X-Control-Event-Id')
+    expect(controlEventId).toBeTruthy()
+    const events = inputLog.recent('instance-1')
+    expect(events).toHaveLength(2)
+    expect(events[1]?.eventId).toBe(controlEventId)
+    expect(events[1]?.actorPrincipalId).toBe('session:instance-1')
+    expect(JSON.stringify(events)).not.toContain(TOKEN)
+  })
+
+  it('enforces v2 grants before sending memory or key commands', async () => {
+    const acl = new PrincipalAccessControl()
+    acl.registerPrincipalToken('viewer-a', TOKEN)
+    acl.grant('viewer-a', 'instance-1', 'viewer')
+    const socketMessage = formatMessage('core.read8', '0xD35E')
+    const fixture = createFixture(new Map([[socketMessage, '12']]), {
+      includeV2: true,
+      principalAcl: acl,
+    })
+
+    const response = await fixture.app.request('/api/v2/sessions/instance-1/core/read8?address=0xD35E', {
+      headers: { 'X-Principal-Token': TOKEN },
+    })
+
+    expect(response.status).toBe(401)
+    expect(fixture.messages).toEqual([])
+  })
+
+  it('rejects protocol delimiter injection in query arguments before socket send', async () => {
+    const fixture = createFixture(new Map(), { includeV2: true })
+
+    const badButton = await fixture.app.request(
+      '/api/v2/sessions/instance-1/mgba-http/button/tap?button=A%2Ccore.read8',
+      { method: 'POST', headers: { 'X-Principal-Token': TOKEN } },
+    )
+    const badAddress = await fixture.app.request(
+      '/api/v2/sessions/instance-1/core/read8?address=0xD35E%3C%7CEND%7C%3E',
+      { headers: { 'X-Principal-Token': TOKEN } },
+    )
+    const badSlot = await fixture.app.request(
+      '/api/v1/0123456789abcdef0123456789abcdef/core/savestateslot?slot=1%2Ccore.read8',
+      { method: 'POST' },
+    )
+
+    expect(badButton.status).toBe(400)
+    expect(badAddress.status).toBe(400)
+    expect(badSlot.status).toBe(400)
+    expect(fixture.messages).toEqual([])
+  })
+
   it('returns PNG bytes for /core/screenshot after reading the bind-mounted capture file', async () => {
     const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a])
     readFileMock.setResponse(pngBytes)
@@ -280,7 +349,12 @@ describe('createApiRouter', () => {
 
 function createFixture(
   responses: Map<string, string>,
-  options: { readonly fallbackToSingleInstance?: boolean; readonly includeV2?: boolean } = {},
+  options: {
+    readonly fallbackToSingleInstance?: boolean
+    readonly includeV2?: boolean
+    readonly inputLog?: InputLogBus
+    readonly principalAcl?: PrincipalAccessControl
+  } = {},
 ): Fixture {
   const messages: string[] = []
   const client = new MgbaSocketClient()
@@ -315,9 +389,12 @@ function createFixture(
 
   const app = new Hono()
   if (options.includeV2) {
-    app.route('/api/v2/sessions/:sessionId', createV2ApiRouter(registry))
+    app.route('/api/v2/sessions/:sessionId', createV2ApiRouter(registry, {
+      inputLog: options.inputLog,
+      principalAcl: options.principalAcl,
+    }))
   }
-  app.route('/api/v1/:token', createApiRouter(registry))
+  app.route('/api/v1/:token', createApiRouter(registry, { inputLog: options.inputLog }))
   if (options.fallbackToSingleInstance) {
     app.route('/', createApiRouter(registry, { fallbackToSingleInstance: true }))
   }

@@ -9,7 +9,7 @@ or mGBA core code.
 
 A passing benchmark run must prove all of the following in a standalone report:
 
-- 10 active emulator instances for at least 60 seconds.
+- 20 active emulator instances for at least 60 seconds.
 - Every instance has display-equivalent p95 FPS >= 60.
 - Every instance has dropped/late frame ratio <= 1%.
 - Gateway plus emulator container/process RAM stays <= 16 GiB.
@@ -19,7 +19,7 @@ A passing benchmark run must prove all of the following in a standalone report:
 ## Baseline risks tracked by the benchmark
 
 The benchmark infrastructure is strict, but these runtime risks remain relevant
-when deciding whether a live run proves the 10-instance target:
+when deciding whether a live run proves the 20-instance target:
 
 - `src/streaming/FrameCapture.ts` schedules every registered instance each
   interval with per-instance in-flight guards. The default
@@ -37,7 +37,7 @@ when deciding whether a live run proves the 10-instance target:
 - The gateway root route still serves a placeholder dashboard, so live per-tile
   FPS/drop instrumentation is not yet visible through the gateway page.
 - `src/instances/DockerDriver.ts` caps per-emulator memory/swap, pids, tmpfs,
-  and shm while keeping the 10-instance cap. Live benchmark memory attribution
+  and shm while keeping the 20-instance cap. Live benchmark memory attribution
   still comes from the strict headless benchmark resource samples.
 
 ## Report schema review checklist
@@ -48,7 +48,7 @@ Use this checklist for the JSON output before treating the benchmark as ready:
 - `config` records requested instances, duration, target FPS, RAM limit, and late
   threshold.
 - `measurementWindow.startedAt` and `measurementWindow.endedAt` use ISO timestamps.
-- `instances[]` has exactly ten entries for a strict target run.
+- `instances[]` has exactly twenty entries for a strict target run.
 - Each instance includes FPS distribution, frame-interval distribution, expected
   frame count, produced frame count, rendered/display-equivalent frame count,
   dropped count, dropped/late ratio, measurement duration, and stream-health
@@ -76,7 +76,7 @@ When benchmark code changes are present, add focused tests for:
 
 - percentile/distribution calculation, including empty and single-sample cases
 - dropped/late frame ratio calculation at the documented threshold
-- PASS/FAIL verdict boundaries for p95 FPS, late-frame ratio, leading/trailing silence, strict 10-instance/60-second floors, and 16 GiB RAM
+- PASS/FAIL verdict boundaries for p95 FPS, late-frame ratio, leading/trailing silence, strict 20-instance/60-second floors, and 16 GiB RAM
 - report serialization compatibility
 - unavailable Docker/container metrics fallback behavior
 - WebSocket backpressure/reconnect accounting

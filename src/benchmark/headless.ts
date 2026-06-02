@@ -57,7 +57,7 @@ interface AdminInstance {
 }
 
 interface PendingReflectionProbe {
-  controlEventId?: string;
+  controlEventId: string;
   requestedAtMs: number;
   requestedAtPerfMs: number;
 }
@@ -396,24 +396,41 @@ async function issueLatencyProbe(
   options: BenchmarkCliOptions,
   capture: InstanceCapture
 ): Promise<void> {
-  const reflectionProbe: PendingReflectionProbe = {
-    requestedAtMs: Date.now(),
-    requestedAtPerfMs: performance.now(),
-  };
-  capture.pendingReflections.push(reflectionProbe);
+  const keySend = measureTextRequest(
+    `${options.baseUrl}/api/v2/sessions/${encodeURIComponent(capture.instance.id)}/mgba-http/button/tap?button=A`,
+    { method: "POST", headers: principalHeaders(capture.instance.token) },
+    capture.keySendLatencyMs
+  )
+    .then((result) => {
+      if (!result.controlEventId) {
+        capture.timestampChainFailures += 1;
+        return;
+      }
+      capture.pendingReflections.push({
+        controlEventId: result.controlEventId,
+        requestedAtMs: result.startedAtWallMs,
+        requestedAtPerfMs: result.startedAtPerfMs,
+      });
+    })
+    .catch(() => {
+      capture.timestampChainFailures += 1;
+    });
+
+  const memoryRead = measureTextRequest(
+    `${options.baseUrl}/api/v2/sessions/${encodeURIComponent(capture.instance.id)}/core/read8?address=0x00000000`,
+    { method: "GET", headers: principalHeaders(capture.instance.token) },
+    capture.memoryReadLatencyMs
+  ).catch(() => {
+    capture.timestampChainFailures += 1;
+  });
 
   await Promise.all([
-    measureTextRequest(
-      `${options.baseUrl}/api/v1/${encodeURIComponent(capture.instance.token)}/mgba-http/button/tap?button=A`,
-      { method: "POST" },
-      capture.keySendLatencyMs
-    ).catch(() => {
-      capture.timestampChainFailures += 1;
-    }),
+    keySend,
+    memoryRead,
     measureTextRequest(
       `${options.baseUrl}/api/v1/${encodeURIComponent(capture.instance.token)}/core/read8?address=0x00000000`,
       { method: "GET" },
-      capture.memoryReadLatencyMs
+      []
     ).catch(() => {
       capture.timestampChainFailures += 1;
     }),
@@ -424,16 +441,31 @@ async function measureTextRequest(
   url: string,
   init: RequestInit,
   samples: number[]
-): Promise<string> {
-  const startedAtMs = performance.now();
+): Promise<{
+  body: string;
+  controlEventId?: string;
+  startedAtPerfMs: number;
+  startedAtWallMs: number;
+}> {
+  const startedAtWallMs = Date.now();
+  const startedAtPerfMs = performance.now();
   const response = await fetch(url, init);
   const body = await response.text();
-  const latencyMs = performance.now() - startedAtMs;
+  const latencyMs = performance.now() - startedAtPerfMs;
   if (!response.ok) {
     throw new Error(`${init.method ?? "GET"} ${url} failed: ${response.status} ${body}`);
   }
   samples.push(latencyMs);
-  return body;
+  return {
+    body,
+    controlEventId: response.headers.get("X-Control-Event-Id") ?? undefined,
+    startedAtPerfMs,
+    startedAtWallMs,
+  };
+}
+
+function principalHeaders(token: string): HeadersInit {
+  return { Authorization: `Bearer ${token}` };
 }
 
 function recordScreenReflection(
@@ -447,7 +479,7 @@ function recordScreenReflection(
   receivedAtPerfMs: number
 ): void {
   const pendingIndex = capture.pendingReflections.findIndex((pending) =>
-    pending.controlEventId === undefined || pending.controlEventId === causality.controlEventId
+    pending.controlEventId === causality.controlEventId
   );
   if (pendingIndex === -1) {
     capture.timestampChainFailures += 1;

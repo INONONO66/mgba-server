@@ -7,7 +7,7 @@ use axum::{
     routing::{get, post},
 };
 use grokemon_auth::{AclService, AuthError, Permission, PrincipalId, SessionId};
-use grokemon_mgba::{CommandKind, CommandResult};
+use grokemon_mgba::{CommandKind, CommandResult, format_message};
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::RwLock;
@@ -105,7 +105,7 @@ async fn read8<C: SessionCommandService>(
         session,
         Permission::ReadMemory,
         CommandKind::MemoryRead,
-        format!("core.read8,{}<|END|>", query.address),
+        read_command("core.read8", &[query.address]),
     )
     .await
 }
@@ -122,7 +122,7 @@ async fn read16<C: SessionCommandService>(
         session,
         Permission::ReadMemory,
         CommandKind::MemoryRead,
-        format!("core.read16,{}<|END|>", query.address),
+        read_command("core.read16", &[query.address]),
     )
     .await
 }
@@ -139,7 +139,7 @@ async fn read_range<C: SessionCommandService>(
         session,
         Permission::ReadMemory,
         CommandKind::MemoryRead,
-        format!("core.readRange,{},{}<|END|>", query.address, query.length),
+        read_command("core.readRange", &[query.address, query.length]),
     )
     .await
 }
@@ -156,7 +156,7 @@ async fn tap<C: SessionCommandService>(
         session,
         Permission::SendKey,
         CommandKind::Control,
-        format!("mgba-http.button.tap,{}<|END|>", query.button),
+        button_command("mgba-http.button.tap", query.button, None),
     )
     .await
 }
@@ -174,7 +174,7 @@ async fn hold<C: SessionCommandService>(
         session,
         Permission::SendKey,
         CommandKind::Control,
-        format!("mgba-http.button.hold,{},{}<|END|>", query.button, duration),
+        button_command("mgba-http.button.hold", query.button, Some(duration)),
     )
     .await
 }
@@ -209,6 +209,16 @@ async fn command_endpoint<C: SessionCommandService>(
     kind: CommandKind,
     command: String,
 ) -> Response {
+    let command = match validate_command(command) {
+        Ok(command) => command,
+        Err(message) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": message })),
+            )
+                .into_response();
+        }
+    };
     let session_id = SessionId::new(session);
     if let Err(error) = authorize(&state, &headers, &session_id, permission).await {
         return auth_response(error);
@@ -239,6 +249,73 @@ async fn command_endpoint<C: SessionCommandService>(
         )
             .into_response(),
     }
+}
+
+fn read_command(command: &str, args: &[String]) -> String {
+    format_message(command, args)
+}
+
+fn button_command(command: &str, button: String, duration: Option<String>) -> String {
+    match duration {
+        Some(duration) => format_message(command, &[button, duration]),
+        None => format_message(command, &[button]),
+    }
+}
+
+fn validate_command(command: String) -> Result<String, &'static str> {
+    let body = command
+        .strip_suffix(grokemon_mgba::TERMINATION_MARKER)
+        .ok_or("invalid command terminator")?;
+    let mut parts = body.split(',');
+    let command_name = parts.next().ok_or("missing command")?;
+    match command_name {
+        "core.read8" | "core.read16" => {
+            let address = parts.next().ok_or("missing address")?;
+            if parts.next().is_some() || !is_numeric_arg(address) {
+                return Err("invalid address");
+            }
+        }
+        "core.readRange" => {
+            let address = parts.next().ok_or("missing address")?;
+            let length = parts.next().ok_or("missing length")?;
+            if parts.next().is_some() || !is_numeric_arg(address) || !is_decimal_arg(length) {
+                return Err("invalid range");
+            }
+        }
+        "mgba-http.button.tap" => {
+            let button = parts.next().ok_or("missing button")?;
+            if parts.next().is_some() || !is_valid_button(button) {
+                return Err("invalid button");
+            }
+        }
+        "mgba-http.button.hold" => {
+            let button = parts.next().ok_or("missing button")?;
+            let duration = parts.next().ok_or("missing duration")?;
+            if parts.next().is_some() || !is_valid_button(button) || !is_decimal_arg(duration) {
+                return Err("invalid hold");
+            }
+        }
+        _ => return Err("unsupported command"),
+    }
+    Ok(command)
+}
+
+fn is_numeric_arg(value: &str) -> bool {
+    is_decimal_arg(value)
+        || value
+            .strip_prefix("0x")
+            .is_some_and(|hex| !hex.is_empty() && hex.chars().all(|ch| ch.is_ascii_hexdigit()))
+}
+
+fn is_decimal_arg(value: &str) -> bool {
+    !value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn is_valid_button(value: &str) -> bool {
+    matches!(
+        value,
+        "A" | "B" | "L" | "R" | "Start" | "Select" | "Up" | "Down" | "Left" | "Right"
+    )
 }
 
 async fn authorize<C>(
@@ -391,6 +468,41 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(commands.seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn invalid_v2_control_args_are_rejected_before_socket_send() {
+        let (app, commands, token) = fixture(Role::Controller, "session-a");
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/api/v2/sessions/session-a/input/tap?button=A%2Ccore.read8")
+                    .header("x-principal-token", token)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(commands.seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn invalid_v2_memory_args_are_rejected_before_socket_send() {
+        let (app, commands, token) = fixture(Role::Controller, "session-a");
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/api/v2/sessions/session-a/memory/readrange?address=0xD35E&length=1%2Ccore.read8")
+                    .header("x-principal-token", token)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert!(commands.seen.lock().unwrap().is_empty());
     }
 }

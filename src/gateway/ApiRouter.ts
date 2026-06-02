@@ -1,4 +1,6 @@
 
+import { createHash } from 'node:crypto'
+
 import { Hono } from 'hono'
 
 import { readCaptureFile } from '../instances/capturePaths.js'
@@ -16,6 +18,7 @@ export type InstanceRegistry = Map<string, InstanceEntry>
 
 interface ApiVariables {
   entry: InstanceEntry
+  principalId: string
 }
 
 interface ApiEnv {
@@ -24,12 +27,50 @@ interface ApiEnv {
 
 const CONTAINER_CAPTURE_PATH = '/capture/rest-capture.png'
 const HOST_CAPTURE_FILE = 'rest-capture.png'
+const TERMINATION_MARKER = '<|END|>'
+const VALID_BUTTONS = new Set(['A', 'B', 'L', 'R', 'Start', 'Select', 'Up', 'Down', 'Left', 'Right'])
+
+type PrincipalPermission = 'view-stream' | 'view-input-logs' | 'send-key' | 'read-memory' | 'admin-lifecycle'
+type PrincipalRole = 'owner' | 'viewer' | 'controller' | 'admin'
+
+interface PrincipalGrant {
+  readonly principalId: string
+  readonly role: PrincipalRole
+  readonly sessionId: string
+}
+
+export class PrincipalAccessControl {
+  private readonly tokenHashToPrincipal = new Map<string, string>()
+  private readonly grants = new Map<string, PrincipalGrant>()
+
+  registerPrincipalToken(principalId: string, token: string): void {
+    this.tokenHashToPrincipal.set(hashToken(token), principalId)
+  }
+
+  grant(principalId: string, sessionId: string, role: PrincipalRole): void {
+    this.grants.set(grantKey(principalId, sessionId), { principalId, role, sessionId })
+  }
+
+  authorize(token: string, sessionId: string, permission: PrincipalPermission): string | undefined {
+    const principalId = this.tokenHashToPrincipal.get(hashToken(token))
+    if (principalId === undefined) {
+      return undefined
+    }
+    const grant = this.grants.get(grantKey(principalId, sessionId))
+    if (grant === undefined || !roleAllows(grant.role, permission)) {
+      return undefined
+    }
+
+    return principalId
+  }
+}
 
 interface ApiRouterOptions {
   authMode?: 'legacy-path-token' | 'principal-token'
   fallbackToSingleInstance?: boolean
   inputLog?: InputLogBus
   onInputCompleted?: (token: string) => void
+  principalAcl?: PrincipalAccessControl
 }
 
 export function createApiRouter(registry: InstanceRegistry, options: ApiRouterOptions = {}): Hono<ApiEnv> {
@@ -37,21 +78,29 @@ export function createApiRouter(registry: InstanceRegistry, options: ApiRouterOp
   const authMode = options.authMode ?? 'legacy-path-token'
 
   app.use('*', async (c, next) => {
-    const entry = authMode === 'principal-token'
-      ? resolvePrincipalTokenEntry(registry, c.req.param('sessionId'), c.req.header('X-Principal-Token'), c.req.header('Authorization'))
+    const auth = authMode === 'principal-token'
+      ? resolvePrincipalTokenEntry(
+        registry,
+        c.req.param('sessionId'),
+        c.req.header('X-Principal-Token'),
+        c.req.header('Authorization'),
+        routePermission(c.req.path),
+        options.principalAcl,
+      )
       : resolveLegacyEntry(registry, c.req.param('token'), options.fallbackToSingleInstance)
-    if (entry === undefined) {
+    if (auth === undefined) {
       return c.text('Unauthorized', 401)
     }
 
-    c.set('entry', entry)
+    c.set('entry', auth.entry)
+    c.set('principalId', auth.principalId)
     await next()
   })
 
   app.get('/core/currentframe', async (c) => c.text(await send(c.get('entry'), 'core.currentFrame')))
 
   app.get('/core/read8', async (c) => {
-    const address = queryParam(c.req.query('address'), 'address')
+    const address = protocolArg(c.req.query('address'), 'address')
     if (!address.ok) {
       return c.text(address.message, 400)
     }
@@ -60,7 +109,7 @@ export function createApiRouter(registry: InstanceRegistry, options: ApiRouterOp
   })
 
   app.get('/core/read16', async (c) => {
-    const address = queryParam(c.req.query('address'), 'address')
+    const address = protocolArg(c.req.query('address'), 'address')
     if (!address.ok) {
       return c.text(address.message, 400)
     }
@@ -69,12 +118,12 @@ export function createApiRouter(registry: InstanceRegistry, options: ApiRouterOp
   })
 
   app.get('/core/readrange', async (c) => {
-    const address = queryParam(c.req.query('address'), 'address')
+    const address = protocolArg(c.req.query('address'), 'address')
     if (!address.ok) {
       return c.text(address.message, 400)
     }
 
-    const length = queryParam(c.req.query('length'), 'length')
+    const length = protocolArg(c.req.query('length'), 'length')
     if (!length.ok) {
       return c.text(length.message, 400)
     }
@@ -83,22 +132,27 @@ export function createApiRouter(registry: InstanceRegistry, options: ApiRouterOp
   })
 
   app.post('/mgba-http/button/tap', async (c) => {
-    const button = queryParam(c.req.query('button'), 'button')
+    const button = buttonParam(c.req.query('button'))
     if (!button.ok) {
       return c.text(button.message, 400)
     }
 
-    return c.text(await sendInput(c.get('entry'), options, 'button.tap', button.value, undefined))
+    const result = await sendInput(c.get('entry'), c.get('principalId'), options, 'button.tap', button.value, undefined)
+    return c.text(result.response, 200, controlEventHeaders(result.controlEventId))
   })
 
   app.post('/mgba-http/button/hold', async (c) => {
-    const button = queryParam(c.req.query('button'), 'button')
+    const button = buttonParam(c.req.query('button'))
     if (!button.ok) {
       return c.text(button.message, 400)
     }
 
-    const duration = c.req.query('duration') ?? '15'
-    return c.text(await sendInput(c.get('entry'), options, 'button.hold', button.value, duration))
+    const duration = durationParam(c.req.query('duration') ?? '15')
+    if (!duration.ok) {
+      return c.text(duration.message, 400)
+    }
+    const result = await sendInput(c.get('entry'), c.get('principalId'), options, 'button.hold', button.value, duration.value)
+    return c.text(result.response, 200, controlEventHeaders(result.controlEventId))
   })
 
   app.post('/core/screenshot', async (c) => {
@@ -117,7 +171,7 @@ export function createApiRouter(registry: InstanceRegistry, options: ApiRouterOp
   })
 
   app.post('/core/savestateslot', async (c) => {
-    const slot = queryParam(c.req.query('slot'), 'slot')
+    const slot = slotParam(c.req.query('slot'))
     if (!slot.ok) {
       return c.text(slot.message, 400)
     }
@@ -126,7 +180,7 @@ export function createApiRouter(registry: InstanceRegistry, options: ApiRouterOp
   })
 
   app.post('/core/loadstateslot', async (c) => {
-    const slot = queryParam(c.req.query('slot'), 'slot')
+    const slot = slotParam(c.req.query('slot'))
     if (!slot.ok) {
       return c.text(slot.message, 400)
     }
@@ -145,10 +199,11 @@ function resolveLegacyEntry(
   registry: InstanceRegistry,
   token: string | undefined,
   fallbackToSingleInstance: boolean | undefined,
-): InstanceEntry | undefined {
-  return token === undefined && fallbackToSingleInstance && registry.size === 1
+): { entry: InstanceEntry; principalId: string } | undefined {
+  const entry = token === undefined && fallbackToSingleInstance && registry.size === 1
     ? Array.from(registry.values())[0]
     : token === undefined ? undefined : registry.get(token)
+  return entry === undefined ? undefined : { entry, principalId: `legacy:${entry.info.id}` }
 }
 
 function resolvePrincipalTokenEntry(
@@ -156,7 +211,9 @@ function resolvePrincipalTokenEntry(
   sessionId: string | undefined,
   principalTokenHeader: string | undefined,
   authorizationHeader: string | undefined,
-): InstanceEntry | undefined {
+  permission: PrincipalPermission,
+  principalAcl: PrincipalAccessControl | undefined,
+): { entry: InstanceEntry; principalId: string } | undefined {
   if (sessionId === undefined) {
     return undefined
   }
@@ -167,11 +224,13 @@ function resolvePrincipalTokenEntry(
   }
 
   const entry = Array.from(registry.values()).find((candidate) => candidate.info.id === sessionId)
-  if (entry?.info.token !== principalToken) {
+  if (entry === undefined) {
     return undefined
   }
 
-  return entry
+  const acl = principalAcl ?? defaultPrincipalAcl(registry)
+  const principalId = acl.authorize(principalToken, sessionId, permission)
+  return principalId === undefined ? undefined : { entry, principalId }
 }
 
 function bearerToken(value: string | undefined): string | undefined {
@@ -189,15 +248,16 @@ function send(entry: InstanceEntry, type: string, ...args: string[]): Promise<st
 
 async function sendInput(
   entry: InstanceEntry,
+  principalId: string,
   options: ApiRouterOptions,
   action: InputAction,
   button: string,
   duration: string | undefined,
-): Promise<string> {
+): Promise<{ response: string; controlEventId?: string }> {
   const command = action === 'button.tap' ? 'mgba-http.button.tap' : 'mgba-http.button.hold'
   const inputEvent = options.inputLog?.beginInput({
     action,
-    actorPrincipalId: `token:${entry.info.token}`,
+    actorPrincipalId: principalId,
     button,
     duration,
     sessionId: entry.info.id,
@@ -216,13 +276,17 @@ async function sendInput(
         options.inputLog?.failInput(inputEvent.eventId, response)
       }
     }
-    return response
+    return { response, controlEventId: inputEvent?.eventId }
   } catch (error) {
     if (inputEvent) {
       options.inputLog?.failInput(inputEvent.eventId, error)
     }
     throw error
   }
+}
+
+function controlEventHeaders(controlEventId: string | undefined): Record<string, string> | undefined {
+  return controlEventId === undefined ? undefined : { 'X-Control-Event-Id': controlEventId }
 }
 
 type QueryParamResult =
@@ -235,4 +299,103 @@ function queryParam(value: string | undefined, name: string): QueryParamResult {
   }
 
   return { ok: true, value }
+}
+
+function protocolArg(value: string | undefined, name: string): QueryParamResult {
+  const parsed = queryParam(value, name)
+  if (!parsed.ok) {
+    return parsed
+  }
+  if (!isProtocolSafe(parsed.value)) {
+    return { ok: false, message: `Invalid ${name}` }
+  }
+
+  return parsed
+}
+
+function buttonParam(value: string | undefined): QueryParamResult {
+  const parsed = protocolArg(value, 'button')
+  if (!parsed.ok) {
+    return parsed
+  }
+  if (!VALID_BUTTONS.has(parsed.value)) {
+    return { ok: false, message: 'Invalid button' }
+  }
+
+  return parsed
+}
+
+function durationParam(value: string | undefined): QueryParamResult {
+  const parsed = protocolArg(value, 'duration')
+  if (!parsed.ok) {
+    return parsed
+  }
+  if (!/^\d+$/.test(parsed.value)) {
+    return { ok: false, message: 'Invalid duration' }
+  }
+
+  return parsed
+}
+
+function slotParam(value: string | undefined): QueryParamResult {
+  const parsed = protocolArg(value, 'slot')
+  if (!parsed.ok) {
+    return parsed
+  }
+  if (!/^\d+$/.test(parsed.value)) {
+    return { ok: false, message: 'Invalid slot' }
+  }
+
+  return parsed
+}
+
+function isProtocolSafe(value: string): boolean {
+  return value !== '' && !value.includes(',') && !value.includes(TERMINATION_MARKER)
+}
+
+function routePermission(path: string): PrincipalPermission {
+  if (path.includes('/mgba-http/button/')) {
+    return 'send-key'
+  }
+  if (path.includes('/core/read')) {
+    return 'read-memory'
+  }
+  if (path.includes('/logs')) {
+    return 'view-input-logs'
+  }
+
+  return 'view-stream'
+}
+
+function defaultPrincipalAcl(registry: InstanceRegistry): PrincipalAccessControl {
+  const acl = new PrincipalAccessControl()
+  for (const entry of registry.values()) {
+    const principalId = `session:${entry.info.id}`
+    acl.registerPrincipalToken(principalId, entry.info.token)
+    acl.grant(principalId, entry.info.id, 'owner')
+  }
+
+  return acl
+}
+
+function roleAllows(role: PrincipalRole, permission: PrincipalPermission): boolean {
+  if (role === 'admin') {
+    return true
+  }
+  if (role === 'owner') {
+    return permission !== 'admin-lifecycle'
+  }
+  if (role === 'controller') {
+    return permission === 'view-stream' || permission === 'view-input-logs' || permission === 'send-key' || permission === 'read-memory'
+  }
+
+  return permission === 'view-stream' || permission === 'view-input-logs'
+}
+
+function grantKey(principalId: string, sessionId: string): string {
+  return `${principalId}\u0000${sessionId}`
+}
+
+function hashToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex')
 }
