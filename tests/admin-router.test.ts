@@ -66,6 +66,21 @@ describe("createAdminRouter", () => {
     expect(await response.json()).toEqual({ error: "Max instances reached" });
     expect(fixture.instanceManager.create).not.toHaveBeenCalled();
   });
+
+  it("returns 503 when a concurrent create reservation reaches maxInstances", async () => {
+    const fixture = createFixture();
+    fixture.instanceManager.create = vi.fn(async () => {
+      throw new Error("MAX_INSTANCES_REACHED");
+    });
+
+    const response = await fixture.app.request("/admin/instances", {
+      method: "POST",
+      headers: { "X-Admin-Token": "admin-token" },
+    });
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "Max instances reached" });
+  });
 });
 
 interface FixtureOptions {
