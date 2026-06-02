@@ -39,8 +39,15 @@ export function createAdminRouter(
       return c.json({ error: "Max instances reached" }, 503);
     }
 
-    const info = await instanceManager.create(config.romPath);
-    return c.json({ id: info.id, token: info.token, status: info.status }, 201);
+    try {
+      const info = await instanceManager.create(config.romPath);
+      return c.json({ id: info.id, token: info.token, status: info.status }, 201);
+    } catch (error) {
+      if (isMaxInstancesError(error)) {
+        return c.json({ error: "Max instances reached" }, 503);
+      }
+      throw error;
+    }
   });
 
   app.get("/instances", (c) => c.json(instanceManager.list()));
@@ -71,4 +78,8 @@ export function createAdminRouter(
   });
 
   return app;
+}
+
+function isMaxInstancesError(error: unknown): boolean {
+  return error instanceof Error && error.message === "MAX_INSTANCES_REACHED";
 }
