@@ -6,7 +6,8 @@ import { readCaptureFile } from '../instances/capturePaths.js'
 
 import type { InstanceRegistry } from '../gateway/ApiRouter.js'
 import { formatMessage, SUCCESS_MARKER } from '../mgba/protocol.js'
-import { StreamFrameType } from './StreamProtocol.js'
+import { StreamFrameType, type StreamFrameMetadata } from './StreamProtocol.js'
+import type { InputLogBus } from './InputLog.js'
 
 const CONTAINER_CAPTURE_PATH = '/capture/frame.png'
 const HOST_CAPTURE_FILE = 'frame.png'
@@ -23,7 +24,9 @@ export interface CapturedFrame {
   payload: Buffer
   payloadBytes: number
   rawBytes: number
+  metadata?: StreamFrameMetadata
   sequence: number
+  sourceCapturedAtMs: number
   tileSize: number
   timestampMs: number
   token: string
@@ -42,6 +45,10 @@ interface PreviousFrameState {
   width: number
 }
 
+interface FrameCaptureOptions {
+  inputLog?: InputLogBus
+}
+
 export class FrameCapture {
   private timer?: NodeJS.Timeout
   private instanceKeys: string[] = []
@@ -53,6 +60,7 @@ export class FrameCapture {
   private readonly sourceCaptureIntervalMs: number
   private readonly keyframeInterval: number
   private readonly tileSize: number
+  private readonly inputLog?: InputLogBus
 
   constructor(
     registry: InstanceRegistry,
@@ -60,12 +68,14 @@ export class FrameCapture {
     sourceCaptureIntervalMs: number,
     keyframeInterval: number,
     tileSize: number,
+    options: FrameCaptureOptions = {},
   ) {
     this.registry = registry
     this.captureIntervalMs = captureIntervalMs
     this.sourceCaptureIntervalMs = sourceCaptureIntervalMs
     this.keyframeInterval = keyframeInterval
     this.tileSize = tileSize
+    this.inputLog = options.inputLog
   }
 
   onFrame(handler: FrameHandler): void {
@@ -180,8 +190,10 @@ export class FrameCapture {
         instanceId: entry.info.id,
         payload: encoded.payload,
         payloadBytes: encoded.payload.byteLength,
+        metadata: this.createFrameMetadata(entry.info.id, timestampMs),
         rawBytes: raw.byteLength,
         sequence,
+        sourceCapturedAtMs: timestampMs,
         tileSize: this.tileSize,
         timestampMs,
         token,
@@ -223,8 +235,10 @@ export class FrameCapture {
       instanceId: entry.info.id,
       payload: EMPTY_DELTA_PAYLOAD,
       payloadBytes: EMPTY_DELTA_PAYLOAD.byteLength,
+      metadata: { sourceCapturedAtMs: previous.sourceCapturedAtMs },
       rawBytes: previous.raw.byteLength,
       sequence,
+      sourceCapturedAtMs: previous.sourceCapturedAtMs,
       tileSize: this.tileSize,
       timestampMs: Date.now(),
       token,
@@ -234,6 +248,13 @@ export class FrameCapture {
     for (const handler of this.handlers) {
       handler(frame)
     }
+  }
+
+  private createFrameMetadata(instanceId: string, sourceCapturedAtMs: number): StreamFrameMetadata {
+    const causality = this.inputLog?.consumePendingCausality(instanceId)
+    return causality === undefined
+      ? { sourceCapturedAtMs }
+      : { causality, sourceCapturedAtMs }
   }
 }
 

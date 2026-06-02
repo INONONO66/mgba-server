@@ -77,6 +77,7 @@ function createFrame(overrides: Partial<CapturedFrame> = {}): CapturedFrame {
     payloadBytes: 10,
     rawBytes: 10,
     sequence: 1,
+    sourceCapturedAtMs: 123,
     tileSize: 16,
     timestampMs: 123,
     token: "token-a",

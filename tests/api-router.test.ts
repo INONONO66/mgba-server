@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createApiRouter, type InstanceRegistry } from '../src/gateway/ApiRouter.js'
+import { createApiRouter, createV2ApiRouter, type InstanceRegistry } from '../src/gateway/ApiRouter.js'
 import { MgbaSocketClient } from '../src/mgba/MgbaSocketClient.js'
 import { formatMessage, SUCCESS_MARKER } from '../src/mgba/protocol.js'
 
@@ -186,6 +186,58 @@ describe('createApiRouter', () => {
     expect(fixture.messages).toEqual([socketMessage])
   })
 
+  it('routes v2 session requests with the principal token header as the primary contract', async () => {
+    const socketMessage = formatMessage('core.currentFrame')
+    const fixture = createFixture(new Map([[socketMessage, '12345']]), { includeV2: true })
+
+    const response = await fixture.app.request('/api/v2/sessions/instance-1/core/currentframe', {
+      headers: { 'X-Principal-Token': TOKEN },
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe('12345')
+    expect(fixture.messages).toEqual([socketMessage])
+  })
+
+  it('accepts bearer principal tokens on v2 session requests', async () => {
+    const socketMessage = formatMessage('core.currentFrame')
+    const fixture = createFixture(new Map([[socketMessage, '12345']]), { includeV2: true })
+
+    const response = await fixture.app.request('/api/v2/sessions/instance-1/core/currentframe', {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe('12345')
+    expect(fixture.messages).toEqual([socketMessage])
+  })
+
+  it('keeps v2 principal tokens scoped to the requested session', async () => {
+    const socketMessage = formatMessage('core.currentFrame')
+    const fixture = createFixture(new Map([[socketMessage, '12345']]), { includeV2: true })
+
+    const response = await fixture.app.request('/api/v2/sessions/other-instance/core/currentframe', {
+      headers: { 'X-Principal-Token': TOKEN },
+    })
+
+    expect(response.status).toBe(401)
+    expect(await response.text()).toBe('Unauthorized')
+    expect(fixture.messages).toEqual([])
+  })
+
+  it('keeps legacy path token routing as a compatibility adapter', async () => {
+    const socketMessage = formatMessage('core.currentFrame')
+    const fixture = createFixture(new Map([[socketMessage, '12345']]), { includeV2: true })
+
+    const response = await fixture.app.request(
+      '/api/v1/0123456789abcdef0123456789abcdef/core/currentframe',
+    )
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe('12345')
+    expect(fixture.messages).toEqual([socketMessage])
+  })
+
   it('returns PNG bytes for /core/screenshot after reading the bind-mounted capture file', async () => {
     const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a])
     readFileMock.setResponse(pngBytes)
@@ -228,7 +280,7 @@ describe('createApiRouter', () => {
 
 function createFixture(
   responses: Map<string, string>,
-  options: { readonly fallbackToSingleInstance?: boolean } = {},
+  options: { readonly fallbackToSingleInstance?: boolean; readonly includeV2?: boolean } = {},
 ): Fixture {
   const messages: string[] = []
   const client = new MgbaSocketClient()
@@ -262,6 +314,9 @@ function createFixture(
   ])
 
   const app = new Hono()
+  if (options.includeV2) {
+    app.route('/api/v2/sessions/:sessionId', createV2ApiRouter(registry))
+  }
   app.route('/api/v1/:token', createApiRouter(registry))
   if (options.fallbackToSingleInstance) {
     app.route('/', createApiRouter(registry, { fallbackToSingleInstance: true }))

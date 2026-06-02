@@ -6,6 +6,7 @@ import type { InstanceRegistry } from '../src/gateway/ApiRouter.js'
 import { SUCCESS_MARKER } from '../src/mgba/protocol.js'
 import { encodeFrame } from '../src/streaming/DashboardBroadcast.js'
 import { FrameCapture, type CapturedFrame } from '../src/streaming/FrameCapture.js'
+import { InputLogBus } from '../src/streaming/InputLog.js'
 import { decodeStreamFrame, StreamFrameType } from '../src/streaming/StreamProtocol.js'
 
 const readCaptureFileMock = vi.hoisted(() => ({
@@ -43,6 +44,40 @@ describe('FrameCapture', () => {
     sharpMock.sharp.mockClear()
   })
 
+  it('attaches completed input causality to the next source-captured frame', async () => {
+    const registry = createRegistryWithClient({
+      send: vi.fn(() => Promise.resolve(SUCCESS_MARKER)),
+    })
+    const inputLog = new InputLogBus()
+    const capture = new FrameCapture(registry, 16, 250, 60, 16, { inputLog })
+    const frames: CapturedFrame[] = []
+    capture.onFrame((frame) => frames.push(frame))
+    const captureOne = (capture as unknown as {
+      captureOne(token: string, instanceIndex: number): Promise<void>
+    }).captureOne.bind(capture)
+
+    await captureOne('token-a', 0)
+    const inputEvent = inputLog.beginInput({
+      action: 'button.tap',
+      actorPrincipalId: 'principal-a',
+      button: 'A',
+      sessionId: 'instance-a',
+      source: 'http',
+    })
+    inputLog.completeInput(inputEvent.eventId)
+    capture.forceKeyframe('token-a')
+    await captureOne('token-a', 0)
+
+    expect(frames.at(-1)?.metadata).toMatchObject({
+      causality: {
+        actorPrincipalId: 'principal-a',
+        button: 'A',
+        controlEventId: inputEvent.eventId,
+      },
+      sourceCapturedAtMs: expect.any(Number),
+    })
+  })
+
   it('emits cached repeat deltas while source screenshot capture is still in flight', async () => {
     const sentMessages: string[] = []
     const firstClient = {
@@ -51,23 +86,7 @@ describe('FrameCapture', () => {
         return Promise.resolve(SUCCESS_MARKER)
       }),
     }
-    const registry: InstanceRegistry = new Map([
-      [
-        'token-a',
-        {
-          info: {
-            id: 'instance-a',
-            token: 'token-a',
-            containerId: 'container-a',
-            containerHost: '127.0.0.1',
-            captureDirectory: '/tmp/grokemon-captures-test/instance-a',
-            status: 'running',
-            createdAt: new Date('2026-05-25T00:00:00Z'),
-          },
-          client: firstClient as never,
-        },
-      ],
-    ])
+    const registry = createRegistryWithClient(firstClient)
     const capture = new FrameCapture(registry, 16, 250, 60, 16)
     const frames: CapturedFrame[] = []
     capture.onFrame((frame) => frames.push(frame))
@@ -121,4 +140,24 @@ function createDeferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
     resolve = nextResolve
   })
   return { promise, resolve }
+}
+
+function createRegistryWithClient(client: { send(message: string): Promise<string> }): InstanceRegistry {
+  return new Map([
+    [
+      'token-a',
+      {
+        info: {
+          id: 'instance-a',
+          token: 'token-a',
+          containerId: 'container-a',
+          containerHost: '127.0.0.1',
+          captureDirectory: '/tmp/grokemon-captures-test/instance-a',
+          status: 'running',
+          createdAt: new Date('2026-05-25T00:00:00Z'),
+        },
+        client: client as never,
+      },
+    ],
+  ])
 }
