@@ -9,17 +9,17 @@ describe("loadConfig", () => {
     process.env = { ...ORIGINAL_ENV };
   });
 
-  it("defaults to the 10-instance target and rejects larger env overrides", () => {
+  it("defaults to the 20-instance target and rejects larger env overrides", () => {
     delete process.env.MAX_INSTANCES;
     delete process.env.CAPTURE_INTERVAL_MS;
     delete process.env.SOURCE_CAPTURE_INTERVAL_MS;
     expect(loadConfig()).toMatchObject({
       captureIntervalMs: 8,
-      maxInstances: 10,
+      maxInstances: 20,
       sourceCaptureIntervalMs: 60000,
     });
 
-    process.env.MAX_INSTANCES = "11";
+    process.env.MAX_INSTANCES = "21";
     expect(() => loadConfig()).toThrow();
   });
 

@@ -42,6 +42,44 @@ describe("StreamProtocol", () => {
     expect(decodeStreamFrame(encoded)?.payload).toEqual(payload);
   });
 
+  it("round-trips v2 metadata sidecar without mixing it into the payload", () => {
+    const payload = Buffer.from([9, 8, 7]);
+    const encoded = encodeStreamFrame({
+      frameType: StreamFrameType.Delta,
+      flags: StreamFrameFlags.DeflateRaw,
+      height: 160,
+      instanceIndex: 1,
+      metadata: {
+        causality: {
+          controlEventId: "event-1",
+          requestId: "request-1",
+          inputRequestedAtMs: 100,
+          inputCompletedAtMs: 120,
+          inputLatencyMs: 20,
+        },
+        sourceCapturedAtMs: 123,
+      },
+      payload,
+      rawBytes: 240 * 160 * 4,
+      sequence: 43,
+      tileSize: 16,
+      timestampMs: 456,
+      width: 240,
+    });
+
+    const decoded = decodeStreamFrame(encoded);
+    expect(decoded).toMatchObject({
+      version: 2,
+      metadata: {
+        causality: { controlEventId: "event-1", requestId: "request-1", inputLatencyMs: 20 },
+        sourceCapturedAtMs: 123,
+      },
+      payloadBytes: 3,
+    });
+    expect(decoded?.metadataBytes).toBeGreaterThan(0);
+    expect(decoded?.payload).toEqual(payload);
+  });
+
   it("rejects malformed binary frames", () => {
     expect(decodeStreamFrame(Buffer.alloc(0))).toBeUndefined();
     expect(decodeStreamFrame(Buffer.from("JPEG-ish"))).toBeUndefined();

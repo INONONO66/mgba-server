@@ -97,7 +97,7 @@ function createFixture(options: FixtureOptions = {}) {
       {
         port: 8787,
         adminToken: "admin-token",
-        maxInstances: options.maxInstances ?? 10,
+        maxInstances: options.maxInstances ?? 20,
         emulatorImage: "grokemon-emulator",
         emulatorPort: 8888,
         emulatorMemoryBytes: 805_306_368,
@@ -142,6 +142,7 @@ function createFrame(overrides: Partial<CapturedFrame> = {}): CapturedFrame {
     payloadBytes: 3,
     rawBytes: 4,
     sequence: 1,
+    sourceCapturedAtMs: 123,
     tileSize: 16,
     timestampMs: 1000,
     width: 1,

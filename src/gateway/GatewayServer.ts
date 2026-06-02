@@ -12,9 +12,10 @@ import { WebSocketServer } from "ws";
 import type { Config } from "../config.js";
 import { DashboardBroadcast } from "../streaming/DashboardBroadcast.js";
 import { FrameCapture } from "../streaming/FrameCapture.js";
+import { InputLogBus } from "../streaming/InputLog.js";
 import { StreamMetrics } from "../streaming/StreamMetrics.js";
 import { createAdminRouter, type IInstanceManager } from "./AdminRouter.js";
-import { createApiRouter, type InstanceRegistry } from "./ApiRouter.js";
+import { createApiRouter, createV2ApiRouter, type InstanceRegistry } from "./ApiRouter.js";
 
 export interface GatewayServer {
   httpServer: ReturnType<typeof createServer>;
@@ -36,29 +37,36 @@ export function createGatewayServer(
   app.get("/", (c) => c.html(dashboardHtml));
 
   const streamMetrics = new StreamMetrics();
-
-  app.route(
-    "/admin",
-    createAdminRouter(config, registry, instanceManager, { streamMetrics })
-  );
-  app.route("/api/v1/:token", createApiRouter(registry));
-  app.route("/", createApiRouter(registry, { fallbackToSingleInstance: true }));
-
-  const httpServer = createServer(getRequestListener(app.fetch));
-  const wss = new WebSocketServer({ server: httpServer });
+  const inputLog = new InputLogBus();
   const frameCapture = new FrameCapture(
     registry,
     config.captureIntervalMs,
     config.sourceCaptureIntervalMs,
     config.streamKeyframeInterval,
-    config.streamTileSize
+    config.streamTileSize,
+    { inputLog }
   );
+
+  app.route(
+    "/admin",
+    createAdminRouter(config, registry, instanceManager, { streamMetrics })
+  );
+  const inputLogOptions = {
+    inputLog,
+    onInputCompleted: (token: string) => frameCapture.forceKeyframe(token),
+  };
+  app.route("/api/v2/sessions/:sessionId", createV2ApiRouter(registry, inputLogOptions));
+  app.route("/api/v1/:token", createApiRouter(registry, inputLogOptions));
+  app.route("/", createApiRouter(registry, { ...inputLogOptions, fallbackToSingleInstance: true }));
+
+  const httpServer = createServer(getRequestListener(app.fetch));
+  const wss = new WebSocketServer({ server: httpServer });
   const broadcast = new DashboardBroadcast(
     wss,
     registry,
     config.wsBackpressureLimit,
     streamMetrics,
-    { requestKeyframe: (token) => frameCapture.forceKeyframe(token) }
+    { inputLog, requestKeyframe: (token) => frameCapture.forceKeyframe(token) }
   );
   frameCapture.onFrame((frame) => {
     streamMetrics.recordProduced(frame);

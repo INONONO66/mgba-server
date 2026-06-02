@@ -47,7 +47,6 @@ function ignoreDockerError(): void {
 interface ContainerCreateOptions {
   image: string
   instanceId: string
-  token: string
   romPath?: string
   networkName: string
   emulatorPort: number
@@ -67,7 +66,6 @@ interface ManagedContainerInfo {
   instanceId: string
   host: string
   captureDirectory?: string
-  token?: string
 }
 
 export class DockerDriver {
@@ -97,7 +95,6 @@ export class DockerDriver {
         'pss-mgba.capture-directory': captureDirectory,
         'pss-mgba.instance-id': opts.instanceId,
         'pss-mgba.managed': 'true',
-        'pss-mgba.token': opts.token,
       },
       Env: [
         'DISPLAY=:99',
@@ -171,7 +168,6 @@ export class DockerDriver {
       const instanceId = container.Labels?.['pss-mgba.instance-id']
       const host = container.Names?.[0]?.replace(LEADING_SLASH, '')
       const captureDirectory = container.Labels?.['pss-mgba.capture-directory']
-      const token = container.Labels?.['pss-mgba.token']
       if (
         instanceId === undefined ||
         host === undefined ||
@@ -180,7 +176,7 @@ export class DockerDriver {
         return []
       }
 
-      return [{ id: container.Id, instanceId, host, captureDirectory, token }]
+      return [{ id: container.Id, instanceId, host, captureDirectory }]
     })
   }
 

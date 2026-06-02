@@ -1,8 +1,9 @@
 // biome-ignore-all lint/style/useFilenamingConvention: Existing multi modules use PascalCase filenames.
 
 const STREAM_MAGIC = "PSMG";
-const STREAM_VERSION = 1;
-export const STREAM_HEADER_SIZE = 30;
+const STREAM_VERSION = 2;
+export const LEGACY_STREAM_HEADER_SIZE = 30;
+export const STREAM_HEADER_SIZE = 34;
 export const VIEWER_CONTROL_MAX_BYTES = 4096;
 const MAX_CLIENT_COUNTER = 10_000_000;
 const MAX_CLIENT_FPS = 1000;
@@ -17,11 +18,31 @@ export const enum StreamFrameFlags {
   DeflateRaw = 1 << 0,
 }
 
+export interface StreamFrameCausalityMetadata {
+  action?: string;
+  actorPrincipalId?: string;
+  button?: string;
+  controlEventId: string;
+  inputCompletedAtMs?: number;
+  inputLatencyMs?: number;
+  inputRequestedAtMs?: number;
+  requestId?: string;
+  source?: string;
+}
+
+export interface StreamFrameMetadata {
+  causality?: StreamFrameCausalityMetadata;
+  sourceCaptureStartedAtMs?: number;
+  sourceCapturedAtMs?: number;
+}
+
 interface StreamFrameEnvelope {
   frameType: StreamFrameType;
   flags: number;
   height: number;
   instanceIndex: number;
+  metadata?: StreamFrameMetadata;
+  metadataBytes: number;
   payload: Buffer;
   payloadBytes: number;
   rawBytes: number;
@@ -37,6 +58,7 @@ interface EncodableStreamFrame {
   flags?: number;
   height: number;
   instanceIndex: number;
+  metadata?: StreamFrameMetadata;
   payload: Buffer;
   rawBytes: number;
   sequence: number;
@@ -60,6 +82,7 @@ export interface ViewerClientMetrics {
 }
 
 export function encodeStreamFrame(frame: EncodableStreamFrame): Buffer {
+  const metadata = encodeMetadata(frame.metadata);
   const header = Buffer.allocUnsafe(STREAM_HEADER_SIZE);
   header.write(STREAM_MAGIC, 0, "ascii");
   header.writeUInt8(STREAM_VERSION, 4);
@@ -73,25 +96,38 @@ export function encodeStreamFrame(frame: EncodableStreamFrame): Buffer {
   header.writeUInt16BE(frame.tileSize, 20);
   header.writeUInt32BE(frame.rawBytes >>> 0, 22);
   header.writeUInt32BE(frame.payload.byteLength >>> 0, 26);
-  return Buffer.concat([header, frame.payload]);
+  header.writeUInt32BE(metadata.byteLength >>> 0, 30);
+  return Buffer.concat([header, metadata, frame.payload]);
 }
 
 export function decodeStreamFrame(data: Buffer): StreamFrameEnvelope | undefined {
-  if (data.byteLength < STREAM_HEADER_SIZE) {
+  if (data.byteLength < LEGACY_STREAM_HEADER_SIZE) {
     return undefined;
   }
   if (data.toString("ascii", 0, 4) !== STREAM_MAGIC) {
     return undefined;
   }
 
+  const version = data.readUInt8(4);
+  const headerSize = version >= 2 ? STREAM_HEADER_SIZE : LEGACY_STREAM_HEADER_SIZE;
+  if (data.byteLength < headerSize) {
+    return undefined;
+  }
+
   const payloadBytes = data.readUInt32BE(26);
-  const expectedLength = STREAM_HEADER_SIZE + payloadBytes;
+  const metadataBytes = version >= 2 ? data.readUInt32BE(30) : 0;
+  const payloadOffset = headerSize + metadataBytes;
+  const expectedLength = payloadOffset + payloadBytes;
   if (data.byteLength !== expectedLength) {
     return undefined;
   }
 
+  const metadata = version >= 2
+    ? decodeMetadata(data.subarray(headerSize, payloadOffset))
+    : undefined;
+
   return {
-    version: data.readUInt8(4),
+    version,
     frameType: data.readUInt8(5) as StreamFrameType,
     instanceIndex: data.readUInt8(6),
     flags: data.readUInt8(7),
@@ -101,8 +137,10 @@ export function decodeStreamFrame(data: Buffer): StreamFrameEnvelope | undefined
     height: data.readUInt16BE(18),
     tileSize: data.readUInt16BE(20),
     rawBytes: data.readUInt32BE(22),
+    metadata,
+    metadataBytes,
     payloadBytes,
-    payload: data.subarray(STREAM_HEADER_SIZE),
+    payload: data.subarray(payloadOffset),
   };
 }
 
@@ -160,4 +198,30 @@ function optionalNonNegativeNumber(value: unknown, maxValue = MAX_CLIENT_COUNTER
   }
 
   return Math.min(value, maxValue);
+}
+
+
+function encodeMetadata(metadata: StreamFrameMetadata | undefined): Buffer {
+  if (metadata === undefined) {
+    return Buffer.alloc(0);
+  }
+
+  return Buffer.from(JSON.stringify(metadata), "utf8");
+}
+
+function decodeMetadata(data: Buffer): StreamFrameMetadata | undefined {
+  if (data.byteLength === 0) {
+    return undefined;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(data.toString("utf8"));
+    if (!parsed || typeof parsed !== "object") {
+      return undefined;
+    }
+
+    return parsed as StreamFrameMetadata;
+  } catch {
+    return undefined;
+  }
 }

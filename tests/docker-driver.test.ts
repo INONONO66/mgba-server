@@ -115,7 +115,6 @@ describe('DockerDriver', () => {
     const info = await driver.createContainer({
       image: 'grokemon-emulator',
       instanceId: 'instance-a',
-      token: 'token-a',
       romPath: '/rom/game.gb',
       networkName: 'grokemon-net',
       emulatorPort: 8888,
@@ -140,7 +139,6 @@ describe('DockerDriver', () => {
       Labels: {
         'pss-mgba.capture-directory': '/tmp/grokemon-captures-test/instance-a',
         'pss-mgba.managed': 'true',
-        'pss-mgba.token': 'token-a',
       },
       Env: ['DISPLAY=:99', 'SDL_AUDIODRIVER=dummy', 'XVFB_SCREEN=320x240x16'],
       HostConfig: {
@@ -167,7 +165,6 @@ describe('DockerDriver', () => {
     await expect(driver.createContainer({
       image: 'grokemon-emulator',
       instanceId: 'instance-a',
-      token: 'token-a',
       networkName: 'grokemon-net',
       emulatorPort: 8888,
       emulatorMemoryBytes: 805_306_368,
@@ -186,7 +183,6 @@ describe('DockerDriver', () => {
     await expect(driver.createContainer({
       image: 'grokemon-emulator',
       instanceId: 'instance-a',
-      token: 'token-a',
       networkName: 'grokemon-net',
       emulatorPort: 8888,
       emulatorMemoryBytes: 805_306_368,
@@ -204,7 +200,6 @@ describe('DockerDriver', () => {
     await driver.createContainer({
       image: 'grokemon-emulator',
       instanceId: 'instance-a',
-      token: 'token-a',
       networkName: 'grokemon-net',
       emulatorPort: 8888,
       emulatorMemoryBytes: 805_306_368,
@@ -226,7 +221,6 @@ describe('DockerDriver', () => {
     await expect(driver.createContainer({
       image: 'grokemon-emulator',
       instanceId: 'instance-a',
-      token: 'token-a',
       networkName: 'grokemon-net',
       emulatorPort: 8888,
       emulatorMemoryBytes: 805_306_368,

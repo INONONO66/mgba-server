@@ -3,7 +3,7 @@ import { z } from "zod";
 const ConfigSchema = z.object({
   port: z.coerce.number().min(1).max(65_535).default(8787),
   adminToken: z.string().min(1),
-  maxInstances: z.coerce.number().int().min(1).max(10).default(10),
+  maxInstances: z.coerce.number().int().min(1).max(20).default(20),
   emulatorImage: z.string().default("grokemon-emulator"),
   emulatorPort: z.coerce.number().int().min(1).max(65_535).default(8888),
   emulatorMemoryBytes: z.coerce.number().int().positive().default(768 * 1024 * 1024),

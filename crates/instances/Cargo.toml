@@ -1,0 +1,17 @@
+[package]
+name = "grokemon-instances"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+grokemon-config = { path = "../config" }
+grokemon-mgba = { path = "../mgba" }
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

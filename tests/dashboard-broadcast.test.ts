@@ -11,6 +11,7 @@ import {
   encodeFrame,
 } from "../src/streaming/DashboardBroadcast.js";
 import type { CapturedFrame } from "../src/streaming/FrameCapture.js";
+import { InputLogBus } from "../src/streaming/InputLog.js";
 import { decodeStreamFrame, StreamFrameType } from "../src/streaming/StreamProtocol.js";
 
 const HOST = "127.0.0.1";
@@ -158,6 +159,28 @@ describe("DashboardBroadcast", () => {
     expect(requestKeyframe).not.toHaveBeenCalled();
   });
 
+  it("transports realtime input-log events to authorized per-instance subscribers", async () => {
+    const inputLog = new InputLogBus();
+    const fixture = await createFixture(262_144, undefined, inputLog);
+    fixtures.push(fixture);
+    const client = await fixture.connect(`/ws/input-log/${TOKEN_A}`);
+
+    const message = nextMessage(client);
+    const event = inputLog.beginInput({
+      action: "button.tap",
+      actorPrincipalId: "principal-a",
+      button: "A",
+      sessionId: "instance-a",
+      source: "http",
+    });
+    inputLog.completeInput(event.eventId);
+
+    await expect(message).resolves.toSatisfy((raw) => {
+      const parsed = JSON.parse(raw?.toString("utf8") ?? "{}");
+      return parsed.type === "input-log" && parsed.event.eventId === event.eventId;
+    });
+  });
+
   it("accepts throttled keyframe requests from per-instance viewers", async () => {
     const requestKeyframe = vi.fn();
     const fixture = await createFixture(262_144, requestKeyframe);
@@ -182,12 +205,13 @@ interface BroadcastFixture {
 
 async function createFixture(
   backpressureLimit = 262_144,
-  requestKeyframe?: (token?: string) => void
+  requestKeyframe?: (token?: string) => void,
+  inputLog?: InputLogBus
 ): Promise<BroadcastFixture> {
   const httpServer = createServer();
   const wss = new WebSocketServer({ server: httpServer });
   const registry = createRegistry();
-  const broadcast = new DashboardBroadcast(wss, registry, backpressureLimit, undefined, { requestKeyframe });
+  const broadcast = new DashboardBroadcast(wss, registry, backpressureLimit, undefined, { inputLog, requestKeyframe });
   const port = await listen(httpServer);
   const clients = new Set<WebSocket>();
 
@@ -249,6 +273,7 @@ function createFrame(overrides: Partial<CapturedFrame> = {}): CapturedFrame {
     payloadBytes: 3,
     rawBytes: 240 * 160 * 4,
     sequence: 1,
+    sourceCapturedAtMs: 123,
     tileSize: 16,
     timestampMs: 123,
     token: TOKEN_A,

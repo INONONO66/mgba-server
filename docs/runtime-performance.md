@@ -1,6 +1,6 @@
 # Runtime/container performance path
 
-This runtime path keeps the mGBA core unchanged and optimizes the local container/runtime path used by the 10-instance benchmark.
+This runtime path keeps the mGBA core unchanged and optimizes the local container/runtime path used by the 20-instance benchmark.
 
 ## Capture readback
 
@@ -27,7 +27,7 @@ The gateway creates the capture root and per-instance directories as owner-only 
 - `CAPTURE_INTERVAL_MS=8` emitted-frame cadence by default
 - `SOURCE_CAPTURE_INTERVAL_MS=60000` source refresh interval by default for strict transport stability
 
-CPU is intentionally not capped here because the benchmark is measuring whether the local runtime can sustain the target cadence. These limits are intentionally per-container and preserve the existing max-10 instance cap. They do not prove the sustained target by themselves; the strict benchmark remains the acceptance gate.
+CPU is intentionally not capped here because the benchmark is measuring whether the local runtime can sustain the target cadence. These limits are intentionally per-container and preserve the max-20 instance cap. They do not prove the sustained target by themselves; the strict benchmark remains the acceptance gate.
 
 ## Cleanup and reconstruction
 

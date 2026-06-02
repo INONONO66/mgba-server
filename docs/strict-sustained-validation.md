@@ -1,8 +1,8 @@
-# Strict sustained 10-instance validation
+# Strict sustained 20-instance validation
 
 This repository keeps the strict acceptance target measurable without opening the dashboard UI:
 
-- exactly 10 running emulator instances
+- exactly 20 running emulator instances
 - sustained measurement window of at least 60 seconds
 - every instance has p95 frame interval at or below the 60fps frame budget
 - dropped/late frame ratio at or below 1%
@@ -11,11 +11,10 @@ This repository keeps the strict acceptance target measurable without opening th
 
 ## Local strict run
 
-A local strict run was executed with Docker Desktop, the `grokemon-emulator:latest` image built from `multi/docker/emulator`, and a locally supplied legal ROM. This validation measures transport/display cadence at the WebSocket boundary, not fresh emulator screenshot cadence. The strict benchmark command used the default max-10 instance cap and the runtime transport defaults that keep delivery cadence above the 60fps acceptance floor:
+A local strict run was executed with Docker Desktop, the `grokemon-emulator:latest` image built from `docker/emulator`, and a locally supplied legal ROM. This validation measures transport/display cadence at the WebSocket boundary, not fresh emulator screenshot cadence. The strict benchmark command used the default max-20 instance cap and the runtime transport defaults that keep delivery cadence above the 60fps acceptance floor:
 
 ```bash
 (
-cd multi
 ADMIN_TOKEN=dev-admin-token \
 ROM_PATH=/path/to/legal-rom.gb \
 CAPTURE_ROOT=/tmp/grokemon-captures \
@@ -24,11 +23,10 @@ exec ./node_modules/.bin/tsx src/index.ts
 ) &
 GATEWAY_PID=$!
 
-cd ..
-pnpm --dir multi benchmark:headless -- \
+pnpm run benchmark:headless -- \
   --base-url http://127.0.0.1:8787 \
   --admin-token dev-admin-token \
-  --instances 10 \
+  --instances 20 \
   --duration-ms 60000 \
   --gateway-pid "$GATEWAY_PID" \
   --output benchmark-report.json \
@@ -36,12 +34,12 @@ pnpm --dir multi benchmark:headless -- \
   --cleanup-created
 ```
 
-Captured outputs are checked in under `multi/docs/benchmarks/2026-05-26-strict-local/`:
+Captured outputs are checked in under `docs/benchmarks/2026-05-26-strict-local/`:
 
 - `benchmark-report.json` — machine-readable strict report
 - `benchmark-summary.txt` — human-readable summary generated from the same report
 
-The recorded run passed with peak total RAM of 0.54 GiB and zero stream sequence gaps. Per-instance p95 frame intervals were approximately 9.38–9.43 ms, comfortably under the 16.67 ms 60fps budget.
+The recorded historical run remains useful as a transport-cadence reference; new strict acceptance runs must use the 20-instance target and should refresh the checked report artifacts when run on the target host.
 
 ## Runtime cadence defaults
 

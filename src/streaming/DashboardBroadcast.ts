@@ -5,6 +5,7 @@ import type { RawData, WebSocket, WebSocketServer } from "ws";
 
 import type { InstanceRegistry } from "../gateway/ApiRouter.js";
 import type { CapturedFrame } from "./FrameCapture.js";
+import { type InputLogBus, type InputLogEvent } from "./InputLog.js";
 import type { StreamMetrics } from "./StreamMetrics.js";
 import {
   encodeStreamFrame,
@@ -18,12 +19,14 @@ const OPEN_READY_STATE = 1;
 const KEYFRAME_REQUEST_THROTTLE_MS = 500;
 
 interface DashboardBroadcastOptions {
+  inputLog?: InputLogBus;
   requestKeyframe?: (token?: string) => void;
 }
 
 export class DashboardBroadcast {
   private readonly dashboardClients = new Set<WebSocket>();
   private readonly instanceClients = new Map<string, Set<WebSocket>>();
+  private readonly inputLogClients = new Map<string, Set<WebSocket>>();
   private readonly keyframesByToken = new Map<string, Buffer>();
   private readonly recoveryTokensByClient = new WeakMap<WebSocket, Set<string>>();
   private readonly lastKeyframeRequestByClient = new WeakMap<WebSocket, Map<string, number>>();
@@ -31,6 +34,7 @@ export class DashboardBroadcast {
   private readonly registry: InstanceRegistry;
   private readonly backpressureLimit: number;
   private readonly metrics?: StreamMetrics;
+  private readonly inputLog?: InputLogBus;
   private readonly requestKeyframe?: (token?: string) => void;
 
   constructor(
@@ -44,6 +48,7 @@ export class DashboardBroadcast {
     this.registry = registry;
     this.backpressureLimit = backpressureLimit;
     this.metrics = metrics;
+    this.inputLog = options.inputLog;
     this.requestKeyframe = options.requestKeyframe;
     this.setupWebSocketServer();
   }
@@ -94,6 +99,18 @@ export class DashboardBroadcast {
       return;
     }
 
+
+    if (url.startsWith("/ws/input-log/")) {
+      const token = safeDecodeURIComponent(url.slice("/ws/input-log/".length));
+      this.handleInputLogConnection(ws, token);
+      return;
+    }
+
+    if (url.startsWith("/ws/logs/")) {
+      const token = safeDecodeURIComponent(url.slice("/ws/logs/".length));
+      this.handleInputLogConnection(ws, token);
+      return;
+    }
     if (url.startsWith("/ws/instance/")) {
       const token = safeDecodeURIComponent(url.slice("/ws/instance/".length));
       if (token === undefined) {
@@ -136,6 +153,47 @@ export class DashboardBroadcast {
     }
 
     ws.close(4000, "Unknown endpoint");
+  }
+
+  private handleInputLogConnection(ws: WebSocket, token: string | undefined): void {
+    if (token === undefined) {
+      ws.close(4000, "Invalid token");
+      return;
+    }
+
+    const entry = this.registry.get(token);
+    if (!entry) {
+      ws.close(4001, "Unknown token");
+      return;
+    }
+
+    let clients = this.inputLogClients.get(token);
+    if (!clients) {
+      clients = new Set<WebSocket>();
+      this.inputLogClients.set(token, clients);
+    }
+
+    clients.add(ws);
+    const cleanup = () => {
+      clients?.delete(ws);
+      if (clients?.size === 0) {
+        this.inputLogClients.delete(token);
+      }
+      unsubscribe();
+    };
+    const unsubscribe = this.inputLog?.subscribe(entry.info.id, (event) => {
+      this.sendInputLogEvent(ws, event);
+    }) ?? (() => undefined);
+
+    ws.on("close", cleanup);
+    ws.on("error", cleanup);
+    for (const event of this.inputLog?.recent(entry.info.id) ?? []) {
+      this.sendInputLogEvent(ws, event);
+    }
+  }
+
+  private sendInputLogEvent(ws: WebSocket, event: InputLogEvent): boolean {
+    return sendJsonWithBackpressure(ws, { type: "input-log", event }, this.backpressureLimit);
   }
 
   private attachControlHandlers(ws: WebSocket, token?: string): void {
@@ -227,6 +285,7 @@ export function encodeFrame(frame: CapturedFrame): Buffer {
     height: frame.height,
     instanceIndex: frame.instanceIndex,
     payload: frame.payload,
+    metadata: frame.metadata,
     rawBytes: frame.rawBytes,
     sequence: frame.sequence,
     tileSize: frame.tileSize,
@@ -235,10 +294,15 @@ export function encodeFrame(frame: CapturedFrame): Buffer {
   });
 }
 
+function sendJsonWithBackpressure(ws: WebSocket, value: unknown, limit: number): boolean {
+  return sendWithBackpressure(ws, Buffer.from(JSON.stringify(value), "utf8"), limit, false);
+}
+
 function sendWithBackpressure(
   ws: WebSocket,
   data: Buffer,
-  limit: number
+  limit: number,
+  binary = true
 ): boolean {
   if (ws.readyState !== OPEN_READY_STATE) {
     return false;
@@ -248,7 +312,7 @@ function sendWithBackpressure(
     return false;
   }
 
-  ws.send(data, { binary: true }, () => undefined);
+  ws.send(data, { binary }, () => undefined);
   return true;
 }
 

@@ -28,6 +28,9 @@ describe("headless benchmark report", () => {
       lateFrameThresholdMs: 25,
       minP95Fps: 60,
       maxDroppedOrLateRatio: 0.01,
+      keySendLatencyMs: [10],
+      memoryReadLatencyMs: [11],
+      screenReflectionLatencyMs: [12],
     });
 
     expect(report.pass).toBe(false);
@@ -132,6 +135,101 @@ describe("headless benchmark report", () => {
     expect(report.streamHealth.sequenceGaps).toBe(4);
   });
 
+  it("fails instance latency SLOs and missing timestamp chains", () => {
+    const report = buildInstanceReport({
+      instanceId: "latency-bad",
+      receivedAtMs: Array.from({ length: 60 }, (_value, frame) => frame * (1000 / 60)),
+      durationMs: 1000,
+      lateFrameThresholdMs: 25,
+      minP95Fps: 60,
+      maxDroppedOrLateRatio: 0.01,
+      keySendLatencyMs: [20, 110],
+      memoryReadLatencyMs: [30, 120],
+      screenReflectionLatencyMs: [80, 220],
+      timestampChainFailures: 1,
+      maxKeySendP95Ms: 100,
+      maxMemoryReadP95Ms: 100,
+      maxScreenReflectionP95Ms: 200,
+    });
+
+    expect(report.pass).toBe(false);
+    expect(report.keySendLatencyMs.p95).toBe(110);
+    expect(report.memoryReadLatencyMs.p95).toBe(120);
+    expect(report.screenReflectionLatencyMs.p95).toBe(220);
+    expect(report.streamHealth.timestampChainFailures).toBe(1);
+    expect(report.failures).toContain("key-send p95 110.00ms > 100ms");
+    expect(report.failures).toContain("memory-read p95 120.00ms > 100ms");
+    expect(report.failures).toContain("screen-reflection p95 220.00ms > 200ms");
+    expect(report.failures).toContain("timestamp-chain failures 1 > 0");
+  });
+
+  it("fails latency SLOs when required sample families are unavailable", () => {
+    const report = buildInstanceReport({
+      instanceId: "missing-latency",
+      receivedAtMs: Array.from({ length: 60 }, (_value, frame) => frame * (1000 / 60)),
+      durationMs: 1000,
+      lateFrameThresholdMs: 25,
+      minP95Fps: 60,
+      maxDroppedOrLateRatio: 0.01,
+      maxKeySendP95Ms: 100,
+      maxMemoryReadP95Ms: 100,
+      maxScreenReflectionP95Ms: 200,
+    });
+
+    expect(report.pass).toBe(false);
+    expect(report.failures).toContain("key-send latency samples unavailable");
+    expect(report.failures).toContain("memory-read latency samples unavailable");
+    expect(report.failures).toContain("screen-reflection latency samples unavailable");
+  });
+
+  it("prevents strict acceptance pass when latency thresholds are not strict enough", () => {
+    const instances = Array.from({ length: 20 }, (_, index) =>
+      buildInstanceReport({
+        instanceId: `instance-${index}`,
+        receivedAtMs: Array.from({ length: 3600 }, (_value, frame) =>
+          frame * (1000 / 60)
+        ),
+        durationMs: 60_000,
+        windowStartedAtMs: 0,
+        windowEndedAtMs: 60_000,
+        lateFrameThresholdMs: 25,
+        minP95Fps: 60,
+        maxDroppedOrLateRatio: 0.01,
+      })
+    );
+
+    const report = finalizeBenchmarkReport({
+      generatedAt: new Date("2026-05-25T00:00:00Z"),
+      baseUrl: "http://127.0.0.1:8787",
+      target: {
+        instances: 20,
+        durationMs: 60_000,
+        minP95Fps: 60,
+        maxDroppedOrLateRatio: 0.01,
+        maxTotalRamBytes: 16 * 1024 * 1024 * 1024,
+        maxKeySendP95Ms: 101,
+        maxMemoryReadP95Ms: 101,
+        maxScreenReflectionP95Ms: 201,
+        strictAcceptance: true,
+      },
+      instances,
+      resourceSamples: [
+        {
+          sampledAtMs: 1,
+          totalMemoryBytes: 2048,
+          containers: [{ id: "container-a", memoryBytes: 1024 }],
+          processes: [{ pid: 1234, role: "gateway", rssBytes: 1024 }],
+        },
+      ],
+      serverStreamMetrics: { delta: { instances: [] } },
+    });
+
+    expect(report.verdict.pass).toBe(false);
+    expect(report.verdict.failures).toContain("strict benchmark requires key-send p95 <= 100ms, got 101");
+    expect(report.verdict.failures).toContain("strict benchmark requires memory-read p95 <= 100ms, got 101");
+    expect(report.verdict.failures).toContain("strict benchmark requires screen-reflection p95 <= 200ms, got 201");
+  });
+
   it("prevents strict acceptance pass for reduced targets and incomplete RAM coverage", () => {
     const instance = buildInstanceReport({
       instanceId: "instance-a",
@@ -167,7 +265,7 @@ describe("headless benchmark report", () => {
     expect(report.verdict.pass).toBe(false);
     expect(report.resources.memoryCoverage).toBe("partial");
     expect(report.verdict.failures).toContain(
-      "strict benchmark requires exactly 10 instances, got 1"
+      "strict benchmark requires exactly 20 instances, got 1"
     );
     expect(report.verdict.failures).toContain(
       "strict benchmark requires duration >= 60000ms, got 1000ms"
@@ -190,7 +288,7 @@ describe("headless benchmark report", () => {
   });
 
   it("allows strict acceptance only with complete RAM and stream metric delta coverage", () => {
-    const instances = Array.from({ length: 10 }, (_, index) =>
+    const instances = Array.from({ length: 20 }, (_, index) =>
       buildInstanceReport({
         instanceId: `instance-${index}`,
         receivedAtMs: Array.from({ length: 3600 }, (_value, frame) =>
@@ -202,6 +300,12 @@ describe("headless benchmark report", () => {
         lateFrameThresholdMs: 25,
         minP95Fps: 60,
         maxDroppedOrLateRatio: 0.01,
+        keySendLatencyMs: [10, 20],
+        memoryReadLatencyMs: [11, 21],
+        screenReflectionLatencyMs: [50, 150],
+        maxKeySendP95Ms: 100,
+        maxMemoryReadP95Ms: 100,
+        maxScreenReflectionP95Ms: 200,
       })
     );
 
@@ -209,11 +313,14 @@ describe("headless benchmark report", () => {
       generatedAt: new Date("2026-05-25T00:00:00Z"),
       baseUrl: "http://127.0.0.1:8787",
       target: {
-        instances: 10,
+        instances: 20,
         durationMs: 60_000,
         minP95Fps: 60,
         maxDroppedOrLateRatio: 0.01,
         maxTotalRamBytes: 16 * 1024 * 1024 * 1024,
+        maxKeySendP95Ms: 100,
+        maxMemoryReadP95Ms: 100,
+        maxScreenReflectionP95Ms: 200,
         strictAcceptance: true,
       },
       instances,
@@ -274,6 +381,9 @@ describe("headless benchmark report", () => {
       lateFrameThresholdMs: 25,
       minP95Fps: 60,
       maxDroppedOrLateRatio: 0.01,
+      keySendLatencyMs: [10],
+      memoryReadLatencyMs: [11],
+      screenReflectionLatencyMs: [12],
     });
     const report = finalizeBenchmarkReport({
       generatedAt: new Date("2026-05-25T00:00:00Z"),
@@ -300,8 +410,8 @@ describe("headless benchmark report", () => {
 
     expect(report.verdict.pass).toBe(true);
     expect(report.resources.peakTotalMemoryBytes).toBe(1024);
-    expect(formatHumanSummary(report)).toContain(
-      "Headless mGBA benchmark: PASS"
-    );
+    const summary = formatHumanSummary(report);
+    expect(summary).toContain("Headless mGBA benchmark: PASS");
+    expect(summary).toContain("key_p95=10.00ms mem_p95=11.00ms reflection_p95=12.00ms timestamp_chain_failures=0");
   });
 });
