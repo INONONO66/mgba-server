@@ -14,6 +14,7 @@ const readCaptureFileMock = vi.hoisted(() => ({
 }))
 
 const sharpMock = vi.hoisted(() => ({
+  onToBuffer: undefined as undefined | (() => void | Promise<void>),
   sharp: vi.fn(() => ({
     ensureAlpha() {
       return this
@@ -21,7 +22,8 @@ const sharpMock = vi.hoisted(() => ({
     raw() {
       return this
     },
-    toBuffer() {
+    async toBuffer() {
+      await sharpMock.onToBuffer?.()
       return Promise.resolve({
         data: Buffer.from([0, 0, 0, 255]),
         info: { width: 1, height: 1 },
@@ -42,6 +44,8 @@ describe('FrameCapture', () => {
   beforeEach(() => {
     readCaptureFileMock.readCaptureFile.mockClear()
     sharpMock.sharp.mockClear()
+    sharpMock.onToBuffer = undefined
+    vi.useRealTimers()
   })
 
   it('attaches completed input causality to the next source-captured frame', async () => {
@@ -74,7 +78,54 @@ describe('FrameCapture', () => {
         button: 'A',
         controlEventId: inputEvent.eventId,
       },
+      sourceCaptureStartedAtMs: expect.any(Number),
       sourceCapturedAtMs: expect.any(Number),
+    })
+  })
+
+  it('does not attach input causality to a source capture started before input completion', async () => {
+    vi.useFakeTimers({ now: 1_000 })
+    const registry = createRegistryWithClient({
+      send: vi.fn(() => Promise.resolve(SUCCESS_MARKER)),
+    })
+    const inputLog = new InputLogBus()
+    const capture = new FrameCapture(registry, 16, 250, 60, 16, { inputLog })
+    const frames: CapturedFrame[] = []
+    capture.onFrame((frame) => frames.push(frame))
+    const captureOne = (capture as unknown as {
+      captureOne(token: string, instanceIndex: number): Promise<void>
+    }).captureOne.bind(capture)
+
+    await captureOne('token-a', 0)
+    capture.forceKeyframe('token-a')
+    sharpMock.onToBuffer = () => {
+      vi.setSystemTime(1_005)
+      const inputEvent = inputLog.beginInput({
+        action: 'button.tap',
+        actorPrincipalId: 'principal-a',
+        button: 'A',
+        sessionId: 'instance-a',
+        source: 'http',
+      })
+      inputLog.completeInput(inputEvent.eventId)
+    }
+
+    vi.setSystemTime(1_000)
+    await captureOne('token-a', 0)
+
+    expect(frames.at(-1)?.metadata?.causality).toBeUndefined()
+
+    sharpMock.onToBuffer = undefined
+    vi.setSystemTime(1_010)
+    capture.forceKeyframe('token-a')
+    await captureOne('token-a', 0)
+
+    expect(frames.at(-1)?.metadata).toMatchObject({
+      causality: {
+        actorPrincipalId: 'principal-a',
+        controlEventId: expect.any(String),
+      },
+      sourceCaptureStartedAtMs: 1_010,
     })
   })
 

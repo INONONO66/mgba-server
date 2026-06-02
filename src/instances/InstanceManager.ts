@@ -20,6 +20,7 @@ export class InstanceManager {
   private readonly registry: InstanceRegistry
   private readonly driver: DockerDriver
   private healthCheckInterval?: NodeJS.Timeout
+  private pendingCreates = 0
 
   constructor(
     config: Config,
@@ -31,50 +32,54 @@ export class InstanceManager {
   }
 
   async create(romPath?: string): Promise<InstanceInfo> {
-    if (this.instances.size >= this.config.maxInstances) {
+    if (this.instances.size + this.pendingCreates >= this.config.maxInstances) {
       throw new Error('MAX_INSTANCES_REACHED')
     }
+    this.pendingCreates += 1
 
-    const id = randomUUID()
-    const token = generateToken()
-    const containerInfo = await this.driver.createContainer({
-      image: this.config.emulatorImage,
-      instanceId: id,
-      token,
-      romPath: romPath ?? this.config.romPath,
-      networkName: this.config.networkName,
-      emulatorPort: this.config.emulatorPort,
-      emulatorMemoryBytes: this.config.emulatorMemoryBytes,
-      captureRoot: this.config.captureRoot,
-    })
-
-    const client = new MgbaSocketClient()
     try {
-      await this.waitForSocket(client, containerInfo.host, containerInfo.port)
-    } catch (error) {
-      client.disconnect()
-      await this.driver.stopContainer(containerInfo.id).catch(() => undefined)
-      if (await isSafeCaptureDirectory(containerInfo.captureDirectory, this.config.captureRoot)) {
-        await rm(containerInfo.captureDirectory, { force: true, recursive: true }).catch(() => undefined)
+      const id = randomUUID()
+      const token = generateToken()
+      const containerInfo = await this.driver.createContainer({
+        image: this.config.emulatorImage,
+        instanceId: id,
+        romPath: romPath ?? this.config.romPath,
+        networkName: this.config.networkName,
+        emulatorPort: this.config.emulatorPort,
+        emulatorMemoryBytes: this.config.emulatorMemoryBytes,
+        captureRoot: this.config.captureRoot,
+      })
+
+      const client = new MgbaSocketClient()
+      try {
+        await this.waitForSocket(client, containerInfo.host, containerInfo.port)
+      } catch (error) {
+        client.disconnect()
+        await this.driver.stopContainer(containerInfo.id).catch(() => undefined)
+        if (await isSafeCaptureDirectory(containerInfo.captureDirectory, this.config.captureRoot)) {
+          await rm(containerInfo.captureDirectory, { force: true, recursive: true }).catch(() => undefined)
+        }
+        throw error
       }
-      throw error
+
+      const info: InstanceInfo = {
+        id,
+        token,
+        containerId: containerInfo.id,
+        containerHost: containerInfo.host,
+        captureDirectory: containerInfo.captureDirectory,
+        status: 'running',
+        createdAt: new Date(),
+      }
+
+      this.instances.set(id, info)
+      this.clients.set(id, client)
+      this.registry.set(token, { info, client })
+
+      return info
+    } finally {
+      this.pendingCreates -= 1
     }
-
-    const info: InstanceInfo = {
-      id,
-      token,
-      containerId: containerInfo.id,
-      containerHost: containerInfo.host,
-      captureDirectory: containerInfo.captureDirectory,
-      status: 'running',
-      createdAt: new Date(),
-    }
-
-    this.instances.set(id, info)
-    this.clients.set(id, client)
-    this.registry.set(token, { info, client })
-
-    return info
   }
 
   async destroy(instanceId: string): Promise<void> {
@@ -83,12 +88,17 @@ export class InstanceManager {
       return
     }
 
-    this.clients.get(instanceId)?.disconnect()
-    await this.driver.stopContainer(info.containerId).catch(() => undefined)
-    if (await isSafeCaptureDirectory(info.captureDirectory, this.config.captureRoot)) {
-      await rm(info.captureDirectory, { force: true, recursive: true }).catch(() => undefined)
+    try {
+      await this.driver.stopContainer(info.containerId)
+      if (await isSafeCaptureDirectory(info.captureDirectory, this.config.captureRoot)) {
+        await rm(info.captureDirectory, { force: true, recursive: true })
+      }
+    } catch (error) {
+      this.markDead(instanceId)
+      throw error
     }
 
+    this.clients.get(instanceId)?.disconnect()
     this.instances.delete(instanceId)
     this.clients.delete(instanceId)
     this.registry.delete(info.token)
@@ -125,11 +135,6 @@ export class InstanceManager {
         continue
       }
 
-      const token = container.token
-      if (token === undefined || token === '') {
-        continue
-      }
-
       const client = new MgbaSocketClient()
       await this.waitForSocket(client, container.host, this.config.emulatorPort).catch(() => {
         client.disconnect()
@@ -139,6 +144,7 @@ export class InstanceManager {
         continue
       }
 
+      const token = generateToken()
       const info: InstanceInfo = {
         id: container.instanceId,
         token,

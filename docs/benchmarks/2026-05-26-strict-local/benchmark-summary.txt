@@ -1,5 +1,5 @@
-Headless mGBA benchmark: PASS
-Target: 10 instances, 60000ms, p95 FPS >= 60, dropped/late <= 1%
+Headless mGBA benchmark: REFERENCE ONLY
+Historical target: 10 instances, 60000ms, p95 FPS >= 60, dropped/late <= 1%; not strict 20-instance acceptance
 PASS 349da275-a5bc-4d3c-aab2-421e9a3ee89a: fps_p95=130.56fps interval_p95=9.38ms avg=149.94fps late=1/3722 ratio=0.00
 PASS 387dc05c-aba5-4eb2-ada2-37e24546e6f0: fps_p95=130.61fps interval_p95=9.39ms avg=115.00fps late=3/3722 ratio=0.00
 PASS b001fe93-527a-43a4-b336-86866c8f78f8: fps_p95=130.63fps interval_p95=9.40ms avg=121.27fps late=2/3722 ratio=0.00

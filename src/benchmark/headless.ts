@@ -295,7 +295,7 @@ async function openCaptureSocket(
 
     const receivedAtPerfMs = performance.now();
     if (frame.metadata?.causality) {
-      recordScreenReflection(capture, frame.metadata.causality, receivedAtPerfMs);
+      recordScreenReflection(capture, frame.metadata, receivedAtPerfMs);
     }
 
     if (frame.frameType === StreamFrameType.Keyframe) {
@@ -470,14 +470,23 @@ function principalHeaders(token: string): HeadersInit {
 
 function recordScreenReflection(
   capture: InstanceCapture,
-  causality: {
-    controlEventId?: string;
-    inputCompletedAtMs?: number;
-    inputLatencyMs?: number;
-    inputRequestedAtMs?: number;
+  metadata: {
+    causality?: {
+      controlEventId?: string;
+      inputCompletedAtMs?: number;
+      inputLatencyMs?: number;
+      inputRequestedAtMs?: number;
+    };
+    sourceCapturedAtMs?: number;
+    sourceCaptureStartedAtMs?: number;
   },
   receivedAtPerfMs: number
 ): void {
+  const causality = metadata.causality;
+  if (!causality?.controlEventId) {
+    capture.timestampChainFailures += 1;
+    return;
+  }
   const pendingIndex = capture.pendingReflections.findIndex((pending) =>
     pending.controlEventId === causality.controlEventId
   );
@@ -490,10 +499,13 @@ function recordScreenReflection(
   capture.pendingReflections.splice(pendingIndex, 1);
 
   if (
-    !causality.controlEventId ||
     causality.inputRequestedAtMs === undefined ||
     causality.inputCompletedAtMs === undefined ||
-    causality.inputLatencyMs === undefined
+    causality.inputLatencyMs === undefined ||
+    metadata.sourceCaptureStartedAtMs === undefined ||
+    metadata.sourceCapturedAtMs === undefined ||
+    metadata.sourceCaptureStartedAtMs < causality.inputCompletedAtMs ||
+    metadata.sourceCapturedAtMs < metadata.sourceCaptureStartedAtMs
   ) {
     capture.timestampChainFailures += 1;
     return;

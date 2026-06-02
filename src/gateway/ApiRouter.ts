@@ -360,11 +360,17 @@ function routePermission(path: string): PrincipalPermission {
   if (path.includes('/core/read')) {
     return 'read-memory'
   }
+  if (path.includes('/core/savestateslot') || path.includes('/core/loadstateslot')) {
+    return 'send-key'
+  }
   if (path.includes('/logs')) {
     return 'view-input-logs'
   }
+  if (path.includes('/core/currentframe') || path.includes('/core/screenshot')) {
+    return 'view-stream'
+  }
 
-  return 'view-stream'
+  return 'admin-lifecycle'
 }
 
 function defaultPrincipalAcl(registry: InstanceRegistry): PrincipalAccessControl {

@@ -285,6 +285,24 @@ describe('createApiRouter', () => {
     expect(fixture.messages).toEqual([])
   })
 
+  it('does not let v2 viewer grants mutate save-state slots', async () => {
+    const acl = new PrincipalAccessControl()
+    acl.registerPrincipalToken('viewer-a', TOKEN)
+    acl.grant('viewer-a', 'instance-1', 'viewer')
+    const fixture = createFixture(new Map([[formatMessage('core.saveStateSlot', '2'), SUCCESS_MARKER]]), {
+      includeV2: true,
+      principalAcl: acl,
+    })
+
+    const response = await fixture.app.request('/api/v2/sessions/instance-1/core/savestateslot?slot=2', {
+      method: 'POST',
+      headers: { 'X-Principal-Token': TOKEN },
+    })
+
+    expect(response.status).toBe(401)
+    expect(fixture.messages).toEqual([])
+  })
+
   it('rejects protocol delimiter injection in query arguments before socket send', async () => {
     const fixture = createFixture(new Map(), { includeV2: true })
 

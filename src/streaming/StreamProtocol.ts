@@ -32,6 +32,7 @@ export interface StreamFrameCausalityMetadata {
 
 export interface StreamFrameMetadata {
   causality?: StreamFrameCausalityMetadata;
+  sourceCaptureStartedAtMs?: number;
   sourceCapturedAtMs?: number;
 }
 

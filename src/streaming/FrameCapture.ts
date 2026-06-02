@@ -146,6 +146,7 @@ export class FrameCapture {
     }
 
     this.inFlightTokens.add(token)
+    const sourceCaptureStartedAtMs = Date.now()
     try {
       const response = await entry.client.send(formatMessage('core.screenshot', CONTAINER_CAPTURE_PATH))
       if (response !== SUCCESS_MARKER) {
@@ -190,7 +191,7 @@ export class FrameCapture {
         instanceId: entry.info.id,
         payload: encoded.payload,
         payloadBytes: encoded.payload.byteLength,
-        metadata: this.createFrameMetadata(entry.info.id, timestampMs),
+        metadata: this.createFrameMetadata(entry.info.id, sourceCaptureStartedAtMs, timestampMs),
         rawBytes: raw.byteLength,
         sequence,
         sourceCapturedAtMs: timestampMs,
@@ -250,11 +251,15 @@ export class FrameCapture {
     }
   }
 
-  private createFrameMetadata(instanceId: string, sourceCapturedAtMs: number): StreamFrameMetadata {
-    const causality = this.inputLog?.consumePendingCausality(instanceId)
+  private createFrameMetadata(
+    instanceId: string,
+    sourceCaptureStartedAtMs: number,
+    sourceCapturedAtMs: number,
+  ): StreamFrameMetadata {
+    const causality = this.inputLog?.consumePendingCausalityCompletedBefore(instanceId, sourceCaptureStartedAtMs)
     return causality === undefined
-      ? { sourceCapturedAtMs }
-      : { causality, sourceCapturedAtMs }
+      ? { sourceCaptureStartedAtMs, sourceCapturedAtMs }
+      : { causality, sourceCaptureStartedAtMs, sourceCapturedAtMs }
   }
 }
 

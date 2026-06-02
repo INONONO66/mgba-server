@@ -86,6 +86,30 @@ export class InputLogBus {
     return causality;
   }
 
+  consumePendingCausalityCompletedBefore(
+    sessionId: string,
+    sourceCaptureStartedAtMs: number
+  ): StreamFrameCausality | undefined {
+    const queue = this.pendingCausalityBySession.get(sessionId);
+    if (!queue || queue.length === 0) {
+      return undefined;
+    }
+
+    const causality = queue[0];
+    if (
+      causality.inputCompletedAtMs === undefined ||
+      causality.inputCompletedAtMs > sourceCaptureStartedAtMs
+    ) {
+      return undefined;
+    }
+
+    queue.shift();
+    if (queue.length === 0) {
+      this.pendingCausalityBySession.delete(sessionId);
+    }
+    return causality;
+  }
+
   recent(sessionId: string): InputLogEvent[] {
     return [...(this.recentEventsBySession.get(sessionId) ?? [])];
   }

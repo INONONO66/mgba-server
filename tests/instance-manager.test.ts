@@ -21,7 +21,6 @@ vi.mock('node:fs/promises', () => ({
 interface CreateContainerOptions {
   image: string
   instanceId: string
-  token: string
   romPath?: string
   networkName: string
   emulatorPort: number
@@ -41,7 +40,6 @@ interface ManagedContainer {
   instanceId: string
   host: string
   captureDirectory?: string
-  token?: string
 }
 
 interface MgbaClientMock {
@@ -61,6 +59,7 @@ const dockerMock = vi.hoisted(() => {
   const listedContainers: ManagedContainer[] = []
   const runningContainers = new Map<string, boolean>()
   const createResponses: ContainerInfo[] = []
+  let stopError: Error | undefined
 
   class DockerDriver {
     createContainer(opts: CreateContainerOptions): Promise<ContainerInfo> {
@@ -77,6 +76,9 @@ const dockerMock = vi.hoisted(() => {
 
     stopContainer(containerId: string): Promise<void> {
       stoppedContainers.push(containerId)
+      if (stopError) {
+        return Promise.reject(stopError)
+      }
       return Promise.resolve()
     }
 
@@ -102,6 +104,10 @@ const dockerMock = vi.hoisted(() => {
       listedContainers.length = 0
       runningContainers.clear()
       createResponses.length = 0
+      stopError = undefined
+    },
+    setStopError(error: Error) {
+      stopError = error
     },
   }
 })
@@ -182,7 +188,6 @@ describe('InstanceManager', () => {
       {
         image: 'grokemon-emulator',
         instanceId: info.id,
-        token: info.token,
         romPath: '/rom/custom.gb',
         networkName: 'grokemon-net',
         emulatorPort: 8888,
@@ -226,6 +231,19 @@ describe('InstanceManager', () => {
     expect(manager.get(info.id)).toBeUndefined()
   })
 
+  it('keeps a failing destroy tracked and visible as an error', async () => {
+    const registry: InstanceRegistry = new Map()
+    const manager = new InstanceManager(createConfig(), registry)
+    const info = await manager.create()
+    dockerMock.setStopError(new Error('remove failed'))
+
+    await expect(manager.destroy(info.id)).rejects.toThrow('remove failed')
+
+    expect(manager.get(info.id)?.status).toBe('error')
+    expect(registry.has(info.token)).toBe(true)
+    expect(mgbaMock.clients[0]?.disconnectCalls).toBe(0)
+  })
+
   it('enforces the configured maximum instance count', async () => {
     const manager = new InstanceManager(createConfig(), new Map())
 
@@ -234,6 +252,19 @@ describe('InstanceManager', () => {
     }
 
     await expect(manager.create()).rejects.toThrow('MAX_INSTANCES_REACHED')
+  })
+
+  it('counts pending creates when enforcing the maximum instance count', async () => {
+    const registry: InstanceRegistry = new Map()
+    const manager = new InstanceManager({ ...createConfig(), maxInstances: 1 }, registry)
+
+    const [first, second] = await Promise.allSettled([manager.create(), manager.create()])
+
+    expect(first.status).toBe('fulfilled')
+    expect(second.status).toBe('rejected')
+    expect((second as PromiseRejectedResult).reason).toMatchObject({ message: 'MAX_INSTANCES_REACHED' })
+    expect(dockerMock.createdOptions).toHaveLength(1)
+    expect(registry.size).toBe(1)
   })
 
   it('marks an instance as error when the health check ping fails', async () => {
@@ -296,7 +327,6 @@ describe('InstanceManager', () => {
       instanceId: 'instance-existing',
       host: 'grokemon-instance-existing',
       captureDirectory: '/tmp/grokemon-captures-test/instance-existing',
-      token: 'existing-token',
     })
     dockerMock.runningContainers.set('container-existing', true)
     const registry: InstanceRegistry = new Map()
@@ -306,11 +336,12 @@ describe('InstanceManager', () => {
 
     const info = manager.get('instance-existing')
     expect(info?.containerId).toBe('container-existing')
-    expect(info?.token).toBe('existing-token')
+    expect(info?.token).toEqual(expect.any(String))
+    expect(info?.token).not.toBe('')
     expect(info?.containerHost).toBe('grokemon-instance-existing')
     expect(info?.captureDirectory).toBe('/tmp/grokemon-captures-test/instance-existing')
     expect(info?.status).toBe('running')
-    expect(registry.size).toBe(1)
+    expect(registry.get(info?.token ?? '')?.info).toBe(info)
     expect(mgbaMock.clients[0]?.connectCalls).toEqual([{ host: 'grokemon-instance-existing', port: 8888 }])
   })
 })
