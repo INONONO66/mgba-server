@@ -1,6 +1,6 @@
 # mGBA Multi-Instance Gateway
 
-`multi/` hosts the Docker-managed mGBA gateway and dashboard stream fan-out used for local multi-instance runs. The performance target is intentionally strict and measurable: 10 active instances for at least 60 seconds, every stream/display-equivalent p95 FPS at or above 60, dropped/late frames at or below 1%, and total gateway plus emulator RAM at or below 16 GiB.
+`multi/` hosts the Docker-managed mGBA gateway and dashboard stream fan-out used for local multi-instance runs. The performance target is intentionally strict and measurable: 20 active instances for at least 60 seconds, every stream/display-equivalent p95 FPS at or above 60, dropped/late frames at or below 1%, and total gateway plus emulator RAM at or below 16 GiB.
 
 ## Headless performance benchmark
 
@@ -42,11 +42,23 @@ The gateway now mounts a per-instance host capture directory into each emulator 
 - `EMULATOR_MEMORY_BYTES` sets the Docker memory and swap cap per emulator. Default: `805306368` bytes, keeping ten emulators well below the 16 GiB strict RAM target before gateway/process overhead.
 - Emulator containers use small tmpfs mounts, a 32 MiB shm segment, pids limit, dummy audio, and a compact `XVFB_SCREEN=320x240x16` display by default.
 
+## API authentication contract
+
+The primary REST control/read contract is session-scoped v2 principal-token access:
+
+- `GET /api/v2/sessions/:sessionId/core/currentframe`
+- `GET /api/v2/sessions/:sessionId/core/read8?address=...`
+- `POST /api/v2/sessions/:sessionId/mgba-http/button/tap?button=...`
+
+Send the session principal token with `X-Principal-Token: <token>` or `Authorization: Bearer <token>`. The token must match the requested `sessionId`.
+
+Compatibility adapters remain available for existing callers: `/api/v1/:token/...` still routes by the legacy path token, and the tokenless root route only falls back to the single registered instance for local single-instance use.
+
 ## Stream protocol
 
 Dashboard and per-instance WebSocket clients receive binary `pss-mgba-stream/v1` frames, not legacy JPEG image messages. The gateway captures the emulator screenshot as RGBA pixels, emits zlib-compressed keyframes, and then emits zlib-compressed tile deltas with per-instance sequence numbers. New subscribers receive the latest keyframe first; per-instance subscribers can request another keyframe with `{ "type": "keyframe" }`. Viewer/client metric deltas can be posted back with `{ "type": "client-metrics", "metrics": { ... } }` and are included in `/admin/metrics/streams`.
 
-Transport tuning is exposed with `CAPTURE_INTERVAL_MS`, `STREAM_KEYFRAME_INTERVAL`, `STREAM_TILE_SIZE`, and `WS_BACKPRESSURE_LIMIT`. The defaults target the strict 10-instance/60fps benchmark path without enabling more than ten instances. See `docs/stream-protocol.md` for the wire format.
+Transport tuning is exposed with `CAPTURE_INTERVAL_MS`, `STREAM_KEYFRAME_INTERVAL`, `STREAM_TILE_SIZE`, and `WS_BACKPRESSURE_LIMIT`. The defaults target the strict 20-instance/60fps benchmark path while allowing the strict 20-instance target. See `docs/stream-protocol.md` for the wire format.
 
 ## Report contents
 

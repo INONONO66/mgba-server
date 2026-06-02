@@ -12,7 +12,8 @@ import { collectResourceSample } from "./resources.js";
 
 const TRAILING_SLASH = /\/$/;
 
-const DEFAULT_INSTANCES = 10;
+const DEFAULT_INSTANCES = 20;
+const MAX_INSTANCES = 20;
 const DEFAULT_DURATION_MS = 60_000;
 const DEFAULT_WARMUP_MS = 5000;
 const DEFAULT_SAMPLE_INTERVAL_MS = 5000;
@@ -20,6 +21,10 @@ const DEFAULT_MIN_P95_FPS = 60;
 const DEFAULT_MAX_DROPPED_RATIO = 0.01;
 const DEFAULT_MAX_RAM_BYTES = 16 * 1024 * 1024 * 1024;
 const DEFAULT_LATE_FRAME_THRESHOLD_MS = (1000 / 60) * 1.5;
+const DEFAULT_MAX_KEY_SEND_P95_MS = 100;
+const DEFAULT_MAX_MEMORY_READ_P95_MS = 100;
+const DEFAULT_MAX_SCREEN_REFLECTION_P95_MS = 200;
+const DEFAULT_PROBE_INTERVAL_MS = 1000;
 
 interface BenchmarkCliOptions {
   adminToken: string;
@@ -32,8 +37,12 @@ interface BenchmarkCliOptions {
   lateFrameThresholdMs: number;
   maxDroppedOrLateRatio: number;
   maxTotalRamBytes: number;
+  maxKeySendP95Ms: number;
+  maxMemoryReadP95Ms: number;
+  maxScreenReflectionP95Ms: number;
   minP95Fps: number;
   output?: string;
+  probeIntervalMs: number;
   sampleIntervalMs: number;
   strictAcceptance: boolean;
   summaryOutput?: string;
@@ -47,14 +56,25 @@ interface AdminInstance {
   token: string;
 }
 
+interface PendingReflectionProbe {
+  controlEventId?: string;
+  requestedAtMs: number;
+  requestedAtPerfMs: number;
+}
+
 interface InstanceCapture {
   instance: AdminInstance;
+  keySendLatencyMs: number[];
   keyframeRecoveries: number;
   lastSequence?: number;
+  memoryReadLatencyMs: number[];
   needsKeyframe: boolean;
+  pendingReflections: PendingReflectionProbe[];
   receivedAtMs: number[];
   reconnects: number;
+  screenReflectionLatencyMs: number[];
   sequenceGaps: number;
+  timestampChainFailures: number;
   plannedClose: boolean;
   ws?: WebSocket;
 }
@@ -83,9 +103,14 @@ async function main(): Promise<void> {
       receivedAtMs: [],
       reconnects: 0,
       plannedClose: false,
+      keySendLatencyMs: [],
       keyframeRecoveries: 0,
+      memoryReadLatencyMs: [],
       needsKeyframe: false,
+      pendingReflections: [],
+      screenReflectionLatencyMs: [],
       sequenceGaps: 0,
+      timestampChainFailures: 0,
     }));
 
     await Promise.all(
@@ -102,9 +127,10 @@ async function main(): Promise<void> {
     ).catch(() => undefined);
     const measurementStartedAt = new Date();
     const measurementStartedAtMs = performance.now();
-    const resourceSamples = await collectSamplesDuringRun(
+    const resourceSamples = await collectSamplesAndProbesDuringRun(
       options,
-      selectedInstances
+      selectedInstances,
+      captures
     );
     const measurementEndedAtMs = performance.now();
     const measurementEndedAt = new Date();
@@ -140,6 +166,9 @@ async function main(): Promise<void> {
         minP95Fps: options.minP95Fps,
         maxDroppedOrLateRatio: options.maxDroppedOrLateRatio,
         maxTotalRamBytes: options.maxTotalRamBytes,
+        maxKeySendP95Ms: options.maxKeySendP95Ms,
+        maxMemoryReadP95Ms: options.maxMemoryReadP95Ms,
+        maxScreenReflectionP95Ms: options.maxScreenReflectionP95Ms,
         requiresGatewayMemory: options.strictAcceptance,
         strictAcceptance: options.strictAcceptance,
       },
@@ -154,6 +183,13 @@ async function main(): Promise<void> {
           lateFrameThresholdMs: options.lateFrameThresholdMs,
           minP95Fps: options.minP95Fps,
           maxDroppedOrLateRatio: options.maxDroppedOrLateRatio,
+          keySendLatencyMs: capture.keySendLatencyMs,
+          memoryReadLatencyMs: capture.memoryReadLatencyMs,
+          screenReflectionLatencyMs: capture.screenReflectionLatencyMs,
+          timestampChainFailures: capture.timestampChainFailures + capture.pendingReflections.length,
+          maxKeySendP95Ms: options.maxKeySendP95Ms,
+          maxMemoryReadP95Ms: options.maxMemoryReadP95Ms,
+          maxScreenReflectionP95Ms: options.maxScreenReflectionP95Ms,
           serverProducedFrames: serverMetrics?.producedFrames,
           serverProducedFps: serverMetrics?.producedFps,
           serverDroppedFrames: Math.max(
@@ -257,6 +293,11 @@ async function openCaptureSocket(
     }
     capture.lastSequence = frame.sequence;
 
+    const receivedAtPerfMs = performance.now();
+    if (frame.metadata?.causality) {
+      recordScreenReflection(capture, frame.metadata.causality, receivedAtPerfMs);
+    }
+
     if (frame.frameType === StreamFrameType.Keyframe) {
       capture.keyframeRecoveries += 1;
       capture.needsKeyframe = false;
@@ -264,7 +305,7 @@ async function openCaptureSocket(
       return;
     }
 
-    capture.receivedAtMs.push(performance.now());
+    capture.receivedAtMs.push(receivedAtPerfMs);
   });
 
   ws.on("close", () => {
@@ -281,10 +322,15 @@ async function openCaptureSocket(
 
 function resetMeasurementCounters(capture: InstanceCapture): void {
   capture.receivedAtMs.length = 0;
+  capture.keySendLatencyMs.length = 0;
   capture.keyframeRecoveries = 0;
+  capture.memoryReadLatencyMs.length = 0;
   capture.needsKeyframe = true;
+  capture.pendingReflections.length = 0;
+  capture.screenReflectionLatencyMs.length = 0;
   capture.reconnects = 0;
   capture.sequenceGaps = 0;
+  capture.timestampChainFailures = 0;
 }
 
 function requestMeasurementKeyframe(capture: InstanceCapture): void {
@@ -293,12 +339,25 @@ function requestMeasurementKeyframe(capture: InstanceCapture): void {
   }
 }
 
-async function collectSamplesDuringRun(
+async function collectSamplesAndProbesDuringRun(
   options: BenchmarkCliOptions,
-  instances: AdminInstance[]
+  instances: AdminInstance[],
+  captures: InstanceCapture[]
+): Promise<ResourceSampleReport[]> {
+  const deadline = Date.now() + options.durationMs;
+  const [samples] = await Promise.all([
+    collectResourceSamplesUntil(options, instances, deadline),
+    collectLatencyProbesUntil(options, captures, deadline),
+  ]);
+  return samples;
+}
+
+async function collectResourceSamplesUntil(
+  options: BenchmarkCliOptions,
+  instances: AdminInstance[],
+  deadline: number
 ): Promise<ResourceSampleReport[]> {
   const samples: ResourceSampleReport[] = [];
-  const deadline = Date.now() + options.durationMs;
 
   while (Date.now() < deadline) {
     samples.push(
@@ -320,6 +379,95 @@ async function collectSamplesDuringRun(
   );
 
   return samples;
+}
+
+async function collectLatencyProbesUntil(
+  options: BenchmarkCliOptions,
+  captures: InstanceCapture[],
+  deadline: number
+): Promise<void> {
+  while (Date.now() < deadline) {
+    await Promise.all(captures.map((capture) => issueLatencyProbe(options, capture)));
+    await sleep(Math.min(options.probeIntervalMs, Math.max(0, deadline - Date.now())));
+  }
+}
+
+async function issueLatencyProbe(
+  options: BenchmarkCliOptions,
+  capture: InstanceCapture
+): Promise<void> {
+  const reflectionProbe: PendingReflectionProbe = {
+    requestedAtMs: Date.now(),
+    requestedAtPerfMs: performance.now(),
+  };
+  capture.pendingReflections.push(reflectionProbe);
+
+  await Promise.all([
+    measureTextRequest(
+      `${options.baseUrl}/api/v1/${encodeURIComponent(capture.instance.token)}/mgba-http/button/tap?button=A`,
+      { method: "POST" },
+      capture.keySendLatencyMs
+    ).catch(() => {
+      capture.timestampChainFailures += 1;
+    }),
+    measureTextRequest(
+      `${options.baseUrl}/api/v1/${encodeURIComponent(capture.instance.token)}/core/read8?address=0x00000000`,
+      { method: "GET" },
+      capture.memoryReadLatencyMs
+    ).catch(() => {
+      capture.timestampChainFailures += 1;
+    }),
+  ]);
+}
+
+async function measureTextRequest(
+  url: string,
+  init: RequestInit,
+  samples: number[]
+): Promise<string> {
+  const startedAtMs = performance.now();
+  const response = await fetch(url, init);
+  const body = await response.text();
+  const latencyMs = performance.now() - startedAtMs;
+  if (!response.ok) {
+    throw new Error(`${init.method ?? "GET"} ${url} failed: ${response.status} ${body}`);
+  }
+  samples.push(latencyMs);
+  return body;
+}
+
+function recordScreenReflection(
+  capture: InstanceCapture,
+  causality: {
+    controlEventId?: string;
+    inputCompletedAtMs?: number;
+    inputLatencyMs?: number;
+    inputRequestedAtMs?: number;
+  },
+  receivedAtPerfMs: number
+): void {
+  const pendingIndex = capture.pendingReflections.findIndex((pending) =>
+    pending.controlEventId === undefined || pending.controlEventId === causality.controlEventId
+  );
+  if (pendingIndex === -1) {
+    capture.timestampChainFailures += 1;
+    return;
+  }
+
+  const pending = capture.pendingReflections[pendingIndex];
+  capture.pendingReflections.splice(pendingIndex, 1);
+
+  if (
+    !causality.controlEventId ||
+    causality.inputRequestedAtMs === undefined ||
+    causality.inputCompletedAtMs === undefined ||
+    causality.inputLatencyMs === undefined
+  ) {
+    capture.timestampChainFailures += 1;
+    return;
+  }
+
+  capture.screenReflectionLatencyMs.push(receivedAtPerfMs - pending.requestedAtPerfMs);
 }
 
 function listInstances(options: BenchmarkCliOptions): Promise<AdminInstance[]> {
@@ -459,8 +607,8 @@ function parseArgs(args: string[]): BenchmarkCliOptions {
   }
 
   const instances = readInteger(values, "instances", DEFAULT_INSTANCES);
-  if (instances < 1 || instances > DEFAULT_INSTANCES) {
-    throw new Error("--instances must be an integer between 1 and 10");
+  if (instances < 1 || instances > MAX_INSTANCES) {
+    throw new Error("--instances must be an integer between 1 and 20");
   }
   const durationMs = readPositiveNumber(values, "duration-ms", DEFAULT_DURATION_MS);
   const warmupMs = readNonNegativeNumber(values, "warmup-ms", DEFAULT_WARMUP_MS);
@@ -485,6 +633,26 @@ function parseArgs(args: string[]): BenchmarkCliOptions {
     "max-total-ram-bytes",
     DEFAULT_MAX_RAM_BYTES
   );
+  const maxKeySendP95Ms = readPositiveNumber(
+    values,
+    "max-key-send-p95-ms",
+    DEFAULT_MAX_KEY_SEND_P95_MS
+  );
+  const maxMemoryReadP95Ms = readPositiveNumber(
+    values,
+    "max-memory-read-p95-ms",
+    DEFAULT_MAX_MEMORY_READ_P95_MS
+  );
+  const maxScreenReflectionP95Ms = readPositiveNumber(
+    values,
+    "max-screen-reflection-p95-ms",
+    DEFAULT_MAX_SCREEN_REFLECTION_P95_MS
+  );
+  const probeIntervalMs = readPositiveNumber(
+    values,
+    "probe-interval-ms",
+    DEFAULT_PROBE_INTERVAL_MS
+  );
 
   return {
     baseUrl: readString(
@@ -505,7 +673,11 @@ function parseArgs(args: string[]): BenchmarkCliOptions {
     minP95Fps,
     maxDroppedOrLateRatio,
     maxTotalRamBytes,
+    maxKeySendP95Ms,
+    maxMemoryReadP95Ms,
+    maxScreenReflectionP95Ms,
     output: values.get("output"),
+    probeIntervalMs,
     summaryOutput: values.get("summary-output"),
     gatewayPid: readOptionalPositiveInteger(values, "gateway-pid"),
     createMissing: !flags.has("no-create"),

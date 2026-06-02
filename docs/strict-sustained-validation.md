@@ -11,11 +11,10 @@ This repository keeps the strict acceptance target measurable without opening th
 
 ## Local strict run
 
-A local strict run was executed with Docker Desktop, the `grokemon-emulator:latest` image built from `multi/docker/emulator`, and a locally supplied legal ROM. This validation measures transport/display cadence at the WebSocket boundary, not fresh emulator screenshot cadence. The strict benchmark command used the default max-10 instance cap and the runtime transport defaults that keep delivery cadence above the 60fps acceptance floor:
+A local strict run was executed with Docker Desktop, the `grokemon-emulator:latest` image built from `docker/emulator`, and a locally supplied legal ROM. This validation measures transport/display cadence at the WebSocket boundary, not fresh emulator screenshot cadence. The strict benchmark command used the default max-10 instance cap and the runtime transport defaults that keep delivery cadence above the 60fps acceptance floor:
 
 ```bash
 (
-cd multi
 ADMIN_TOKEN=dev-admin-token \
 ROM_PATH=/path/to/legal-rom.gb \
 CAPTURE_ROOT=/tmp/grokemon-captures \
@@ -24,8 +23,7 @@ exec ./node_modules/.bin/tsx src/index.ts
 ) &
 GATEWAY_PID=$!
 
-cd ..
-pnpm --dir multi benchmark:headless -- \
+pnpm run benchmark:headless -- \
   --base-url http://127.0.0.1:8787 \
   --admin-token dev-admin-token \
   --instances 10 \
@@ -36,7 +34,7 @@ pnpm --dir multi benchmark:headless -- \
   --cleanup-created
 ```
 
-Captured outputs are checked in under `multi/docs/benchmarks/2026-05-26-strict-local/`:
+Captured outputs are checked in under `docs/benchmarks/2026-05-26-strict-local/`:
 
 - `benchmark-report.json` — machine-readable strict report
 - `benchmark-summary.txt` — human-readable summary generated from the same report

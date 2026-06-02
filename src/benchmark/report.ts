@@ -18,11 +18,16 @@ interface InstanceBenchmarkReport {
   frameIntervalMs: DistributionSummary;
   instanceId: string;
   lateFrameThresholdMs: number;
+  keySendLatencyMs: DistributionSummary;
+  memoryReadLatencyMs: DistributionSummary;
   pass: boolean;
+  screenReflectionLatencyMs: DistributionSummary;
+  timestampChainFailures: number;
   receivedFrames: number;
   streamHealth: {
     reconnects: number;
     keyframeRecoveries: number;
+    timestampChainFailures: number;
     serverProducedFrames?: number;
     serverProducedFps?: number;
     serverDroppedFrames?: number;
@@ -57,6 +62,9 @@ interface BenchmarkTarget {
   instances: number;
   maxDroppedOrLateRatio: number;
   maxTotalRamBytes: number;
+  maxKeySendP95Ms?: number;
+  maxMemoryReadP95Ms?: number;
+  maxScreenReflectionP95Ms?: number;
   minP95Fps: number;
   requiresGatewayMemory?: boolean;
   strictAcceptance?: boolean;
@@ -122,6 +130,13 @@ export function buildInstanceReport(opts: {
   reconnects?: number;
   keyframeRecoveries?: number;
   sequenceGaps?: number;
+  keySendLatencyMs?: number[];
+  memoryReadLatencyMs?: number[];
+  screenReflectionLatencyMs?: number[];
+  timestampChainFailures?: number;
+  maxKeySendP95Ms?: number;
+  maxMemoryReadP95Ms?: number;
+  maxScreenReflectionP95Ms?: number;
 }): InstanceBenchmarkReport {
   const measuredDurationMs =
     opts.windowStartedAtMs !== undefined && opts.windowEndedAtMs !== undefined
@@ -151,6 +166,10 @@ export function buildInstanceReport(opts: {
   const droppedOrLateFrameRatio = droppedOrLateFrames / expectedFrames;
   const displayedFps = summarize(fpsSamples);
   const frameIntervalMs = summarize(intervals);
+  const keySendLatencyMs = summarize(opts.keySendLatencyMs ?? []);
+  const memoryReadLatencyMs = summarize(opts.memoryReadLatencyMs ?? []);
+  const screenReflectionLatencyMs = summarize(opts.screenReflectionLatencyMs ?? []);
+  const timestampChainFailures = opts.timestampChainFailures ?? 0;
   const failures: string[] = [];
 
   const maxSustainedFrameIntervalMs = frameBudgetMs;
@@ -171,6 +190,40 @@ export function buildInstanceReport(opts: {
   if (opts.receivedAtMs.length === 0) {
     failures.push("no frames received");
   }
+  if (opts.maxKeySendP95Ms !== undefined) {
+    if (keySendLatencyMs.count === 0) {
+      failures.push("key-send latency samples unavailable");
+    } else if (keySendLatencyMs.p95 > opts.maxKeySendP95Ms) {
+      failures.push(
+        `key-send p95 ${formatNumber(keySendLatencyMs.p95)}ms > ${opts.maxKeySendP95Ms}ms`
+      );
+    }
+  }
+
+  if (opts.maxMemoryReadP95Ms !== undefined) {
+    if (memoryReadLatencyMs.count === 0) {
+      failures.push("memory-read latency samples unavailable");
+    } else if (memoryReadLatencyMs.p95 > opts.maxMemoryReadP95Ms) {
+      failures.push(
+        `memory-read p95 ${formatNumber(memoryReadLatencyMs.p95)}ms > ${opts.maxMemoryReadP95Ms}ms`
+      );
+    }
+  }
+
+  if (opts.maxScreenReflectionP95Ms !== undefined) {
+    if (screenReflectionLatencyMs.count === 0) {
+      failures.push("screen-reflection latency samples unavailable");
+    } else if (screenReflectionLatencyMs.p95 > opts.maxScreenReflectionP95Ms) {
+      failures.push(
+        `screen-reflection p95 ${formatNumber(screenReflectionLatencyMs.p95)}ms > ${opts.maxScreenReflectionP95Ms}ms`
+      );
+    }
+  }
+
+  if (timestampChainFailures > 0) {
+    failures.push(`timestamp-chain failures ${timestampChainFailures} > 0`);
+  }
+
 
   return {
     instanceId: opts.instanceId,
@@ -182,10 +235,15 @@ export function buildInstanceReport(opts: {
     droppedOrLateFrames,
     droppedOrLateFrameRatio,
     lateFrameThresholdMs: opts.lateFrameThresholdMs,
+    keySendLatencyMs,
+    memoryReadLatencyMs,
     durationMs: measuredDurationMs,
+    screenReflectionLatencyMs,
+    timestampChainFailures,
     streamHealth: {
       reconnects: opts.reconnects ?? 0,
       keyframeRecoveries: opts.keyframeRecoveries ?? 0,
+      timestampChainFailures,
       serverProducedFrames: opts.serverProducedFrames,
       serverProducedFps: opts.serverProducedFps,
       serverDroppedFrames: opts.serverDroppedFrames,
@@ -223,8 +281,8 @@ export function finalizeBenchmarkReport(opts: {
   );
   failures.push(...resourceFailures);
 
-  if (strictAcceptance && opts.target.instances !== 10) {
-    failures.push(`strict benchmark requires exactly 10 instances, got ${opts.target.instances}`);
+  if (strictAcceptance && opts.target.instances !== 20) {
+    failures.push(`strict benchmark requires exactly 20 instances, got ${opts.target.instances}`);
   }
 
   if (strictAcceptance && opts.target.durationMs < 60_000) {
@@ -251,6 +309,24 @@ export function finalizeBenchmarkReport(opts: {
   ) {
     failures.push(
       `strict benchmark requires RAM limit <= 17179869184 bytes, got ${opts.target.maxTotalRamBytes} bytes`
+    );
+  }
+
+  if (strictAcceptance && (opts.target.maxKeySendP95Ms ?? Infinity) > 100) {
+    failures.push(
+      `strict benchmark requires key-send p95 <= 100ms, got ${opts.target.maxKeySendP95Ms ?? "unconfigured"}`
+    );
+  }
+
+  if (strictAcceptance && (opts.target.maxMemoryReadP95Ms ?? Infinity) > 100) {
+    failures.push(
+      `strict benchmark requires memory-read p95 <= 100ms, got ${opts.target.maxMemoryReadP95Ms ?? "unconfigured"}`
+    );
+  }
+
+  if (strictAcceptance && (opts.target.maxScreenReflectionP95Ms ?? Infinity) > 200) {
+    failures.push(
+      `strict benchmark requires screen-reflection p95 <= 200ms, got ${opts.target.maxScreenReflectionP95Ms ?? "unconfigured"}`
     );
   }
 
@@ -317,12 +393,12 @@ export function finalizeBenchmarkReport(opts: {
 export function formatHumanSummary(report: BenchmarkReport): string {
   const lines = [
     `Headless mGBA benchmark: ${report.verdict.pass ? "PASS" : "FAIL"}`,
-    `Target: ${report.target.instances} instances, ${report.target.durationMs}ms, p95 FPS >= ${report.target.minP95Fps}, dropped/late <= ${report.target.maxDroppedOrLateRatio * 100}%`,
+    `Target: ${report.target.instances} instances, ${report.target.durationMs}ms, p95 FPS >= ${report.target.minP95Fps}, dropped/late <= ${report.target.maxDroppedOrLateRatio * 100}%, key/read/reflection p95 <= ${report.target.maxKeySendP95Ms ?? "n/a"}/${report.target.maxMemoryReadP95Ms ?? "n/a"}/${report.target.maxScreenReflectionP95Ms ?? "n/a"}ms`,
   ];
 
   for (const instance of report.instances) {
     lines.push(
-      `${instance.pass ? "PASS" : "FAIL"} ${instance.instanceId}: fps_p95=${formatNumber(instance.displayedFps.p95)}fps interval_p95=${formatNumber(instance.frameIntervalMs.p95)}ms avg=${formatNumber(instance.displayedFps.average)}fps late=${instance.droppedOrLateFrames}/${instance.expectedFrames} ratio=${formatNumber(instance.droppedOrLateFrameRatio)}`
+      `${instance.pass ? "PASS" : "FAIL"} ${instance.instanceId}: fps_p95=${formatNumber(instance.displayedFps.p95)}fps interval_p95=${formatNumber(instance.frameIntervalMs.p95)}ms avg=${formatNumber(instance.displayedFps.average)}fps late=${instance.droppedOrLateFrames}/${instance.expectedFrames} ratio=${formatNumber(instance.droppedOrLateFrameRatio)} key_p95=${formatNumber(instance.keySendLatencyMs.p95)}ms mem_p95=${formatNumber(instance.memoryReadLatencyMs.p95)}ms reflection_p95=${formatNumber(instance.screenReflectionLatencyMs.p95)}ms timestamp_chain_failures=${instance.timestampChainFailures}`
     );
   }
 
