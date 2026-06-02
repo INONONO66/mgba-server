@@ -54,6 +54,7 @@ export class FrameCapture {
   private instanceKeys: string[] = []
   private readonly handlers: FrameHandler[] = []
   private readonly inFlightTokens = new Set<string>()
+  private readonly forceRequestedDuringInFlight = new Set<string>()
   private readonly previousFrames = new Map<string, PreviousFrameState>()
   private readonly registry: InstanceRegistry
   private readonly captureIntervalMs: number
@@ -86,6 +87,10 @@ export class FrameCapture {
     if (token !== undefined) {
       const entry = this.registry.get(token)
       if (entry) {
+        if (this.inFlightTokens.has(token)) {
+          this.forceRequestedDuringInFlight.add(token)
+          return
+        }
         const previous = this.previousFrames.get(entry.info.id)
         if (previous) {
           previous.forceKeyframe = true
@@ -167,6 +172,7 @@ export class FrameCapture {
       const sourceCaptureCount = (previous?.sourceCaptureCount ?? 0) + 1
       const dimensionsChanged = previous?.width !== width || previous?.height !== height
       const forceKeyframe = previous?.forceKeyframe ?? false
+      const forceNextKeyframe = this.forceRequestedDuringInFlight.delete(token)
       const periodicKeyframe = sourceCaptureCount % this.keyframeInterval === 0
       const isKeyframe = !previous || dimensionsChanged || forceKeyframe || periodicKeyframe
       const encoded = isKeyframe
@@ -174,7 +180,7 @@ export class FrameCapture {
         : encodeDelta(previous.raw, raw, width, height, this.tileSize)
 
       this.previousFrames.set(entry.info.id, {
-        forceKeyframe: false,
+        forceKeyframe: forceNextKeyframe,
         height,
         raw: Buffer.from(raw),
         sequence,

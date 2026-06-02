@@ -129,6 +129,59 @@ describe('FrameCapture', () => {
     })
   })
 
+  it('preserves keyframe requests made while a source capture is in flight', async () => {
+    vi.useFakeTimers({ now: 2_000 })
+    const client = {
+      send: vi.fn(() => Promise.resolve(SUCCESS_MARKER)),
+    }
+    const registry = createRegistryWithClient(client)
+    const inputLog = new InputLogBus()
+    const capture = new FrameCapture(registry, 16, 60_000, 60, 16, { inputLog })
+    const frames: CapturedFrame[] = []
+    capture.onFrame((frame) => frames.push(frame))
+    const captureOne = (capture as unknown as {
+      captureOne(token: string, instanceIndex: number): Promise<void>
+    }).captureOne.bind(capture)
+
+    await captureOne('token-a', 0)
+    const decodeDeferred = createDeferred<void>()
+    sharpMock.onToBuffer = async () => {
+      const inputEvent = inputLog.beginInput({
+        action: 'button.tap',
+        actorPrincipalId: 'principal-a',
+        button: 'A',
+        sessionId: 'instance-a',
+        source: 'http',
+      })
+      inputLog.completeInput(inputEvent.eventId)
+      capture.forceKeyframe('token-a')
+      await decodeDeferred.promise
+    }
+
+    vi.setSystemTime(2_100)
+    capture.forceKeyframe('token-a')
+    const staleCapture = captureOne('token-a', 0)
+    await Promise.resolve()
+    vi.setSystemTime(2_110)
+    decodeDeferred.resolve()
+    await staleCapture
+
+    expect(frames.at(-1)?.metadata?.causality).toBeUndefined()
+
+    sharpMock.onToBuffer = undefined
+    vi.setSystemTime(2_120)
+    await captureOne('token-a', 0)
+
+    expect(frames.at(-1)).toMatchObject({ frameType: StreamFrameType.Keyframe })
+    expect(frames.at(-1)?.metadata).toMatchObject({
+      causality: {
+        actorPrincipalId: 'principal-a',
+        controlEventId: expect.any(String),
+      },
+      sourceCaptureStartedAtMs: 2_120,
+    })
+  })
+
   it('emits cached repeat deltas while source screenshot capture is still in flight', async () => {
     const sentMessages: string[] = []
     const firstClient = {
