@@ -114,92 +114,113 @@ impl LibretroCore {
             }};
         }
 
+        let retro_api_version = sym!(
+            b"retro_api_version\0",
+            "retro_api_version",
+            unsafe extern "C" fn() -> u32
+        );
+        let retro_init = sym!(b"retro_init\0", "retro_init", unsafe extern "C" fn());
+        let retro_deinit = sym!(b"retro_deinit\0", "retro_deinit", unsafe extern "C" fn());
+        let retro_set_environment = sym!(
+            b"retro_set_environment\0",
+            "retro_set_environment",
+            unsafe extern "C" fn(RetroEnvironmentFn)
+        );
+        let retro_set_video_refresh = sym!(
+            b"retro_set_video_refresh\0",
+            "retro_set_video_refresh",
+            unsafe extern "C" fn(RetroVideoRefreshFn)
+        );
+        let retro_set_audio_sample = sym!(
+            b"retro_set_audio_sample\0",
+            "retro_set_audio_sample",
+            unsafe extern "C" fn(RetroAudioSampleFn)
+        );
+        let retro_set_audio_sample_batch = sym!(
+            b"retro_set_audio_sample_batch\0",
+            "retro_set_audio_sample_batch",
+            unsafe extern "C" fn(RetroAudioSampleBatchFn)
+        );
+        let retro_set_input_poll = sym!(
+            b"retro_set_input_poll\0",
+            "retro_set_input_poll",
+            unsafe extern "C" fn(RetroInputPollFn)
+        );
+        let retro_set_input_state = sym!(
+            b"retro_set_input_state\0",
+            "retro_set_input_state",
+            unsafe extern "C" fn(RetroInputStateFn)
+        );
+        let retro_load_game = sym!(
+            b"retro_load_game\0",
+            "retro_load_game",
+            unsafe extern "C" fn(*const RetroGameInfo) -> bool
+        );
+        let retro_unload_game = sym!(
+            b"retro_unload_game\0",
+            "retro_unload_game",
+            unsafe extern "C" fn()
+        );
+        let retro_run = sym!(b"retro_run\0", "retro_run", unsafe extern "C" fn());
+        let retro_reset = sym!(b"retro_reset\0", "retro_reset", unsafe extern "C" fn());
+        let retro_serialize_size = sym!(
+            b"retro_serialize_size\0",
+            "retro_serialize_size",
+            unsafe extern "C" fn() -> usize
+        );
+        let retro_serialize = sym!(
+            b"retro_serialize\0",
+            "retro_serialize",
+            unsafe extern "C" fn(*mut libc::c_void, usize) -> bool
+        );
+        let retro_unserialize = sym!(
+            b"retro_unserialize\0",
+            "retro_unserialize",
+            unsafe extern "C" fn(*const libc::c_void, usize) -> bool
+        );
+        let retro_get_memory_data = sym!(
+            b"retro_get_memory_data\0",
+            "retro_get_memory_data",
+            unsafe extern "C" fn(u32) -> *mut libc::c_void
+        );
+        let retro_get_memory_size = sym!(
+            b"retro_get_memory_size\0",
+            "retro_get_memory_size",
+            unsafe extern "C" fn(u32) -> usize
+        );
+        let retro_get_system_info = sym!(
+            b"retro_get_system_info\0",
+            "retro_get_system_info",
+            unsafe extern "C" fn(*mut RetroSystemInfo)
+        );
+        let retro_get_system_av_info = sym!(
+            b"retro_get_system_av_info\0",
+            "retro_get_system_av_info",
+            unsafe extern "C" fn(*mut RetroAvInfo)
+        );
+
         let core = Self {
             _lib: lib,
-            retro_api_version: sym!(
-                b"retro_api_version\0",
-                "retro_api_version",
-                unsafe extern "C" fn() -> u32
-            ),
-            retro_init: sym!(b"retro_init\0", "retro_init", unsafe extern "C" fn()),
-            retro_deinit: sym!(b"retro_deinit\0", "retro_deinit", unsafe extern "C" fn()),
-            retro_set_environment: sym!(
-                b"retro_set_environment\0",
-                "retro_set_environment",
-                unsafe extern "C" fn(RetroEnvironmentFn)
-            ),
-            retro_set_video_refresh: sym!(
-                b"retro_set_video_refresh\0",
-                "retro_set_video_refresh",
-                unsafe extern "C" fn(RetroVideoRefreshFn)
-            ),
-            retro_set_audio_sample: sym!(
-                b"retro_set_audio_sample\0",
-                "retro_set_audio_sample",
-                unsafe extern "C" fn(RetroAudioSampleFn)
-            ),
-            retro_set_audio_sample_batch: sym!(
-                b"retro_set_audio_sample_batch\0",
-                "retro_set_audio_sample_batch",
-                unsafe extern "C" fn(RetroAudioSampleBatchFn)
-            ),
-            retro_set_input_poll: sym!(
-                b"retro_set_input_poll\0",
-                "retro_set_input_poll",
-                unsafe extern "C" fn(RetroInputPollFn)
-            ),
-            retro_set_input_state: sym!(
-                b"retro_set_input_state\0",
-                "retro_set_input_state",
-                unsafe extern "C" fn(RetroInputStateFn)
-            ),
-            retro_load_game: sym!(
-                b"retro_load_game\0",
-                "retro_load_game",
-                unsafe extern "C" fn(*const RetroGameInfo) -> bool
-            ),
-            retro_unload_game: sym!(
-                b"retro_unload_game\0",
-                "retro_unload_game",
-                unsafe extern "C" fn()
-            ),
-            retro_run: sym!(b"retro_run\0", "retro_run", unsafe extern "C" fn()),
-            retro_reset: sym!(b"retro_reset\0", "retro_reset", unsafe extern "C" fn()),
-            retro_serialize_size: sym!(
-                b"retro_serialize_size\0",
-                "retro_serialize_size",
-                unsafe extern "C" fn() -> usize
-            ),
-            retro_serialize: sym!(
-                b"retro_serialize\0",
-                "retro_serialize",
-                unsafe extern "C" fn(*mut libc::c_void, usize) -> bool
-            ),
-            retro_unserialize: sym!(
-                b"retro_unserialize\0",
-                "retro_unserialize",
-                unsafe extern "C" fn(*const libc::c_void, usize) -> bool
-            ),
-            retro_get_memory_data: sym!(
-                b"retro_get_memory_data\0",
-                "retro_get_memory_data",
-                unsafe extern "C" fn(u32) -> *mut libc::c_void
-            ),
-            retro_get_memory_size: sym!(
-                b"retro_get_memory_size\0",
-                "retro_get_memory_size",
-                unsafe extern "C" fn(u32) -> usize
-            ),
-            retro_get_system_info: sym!(
-                b"retro_get_system_info\0",
-                "retro_get_system_info",
-                unsafe extern "C" fn(*mut RetroSystemInfo)
-            ),
-            retro_get_system_av_info: sym!(
-                b"retro_get_system_av_info\0",
-                "retro_get_system_av_info",
-                unsafe extern "C" fn(*mut RetroAvInfo)
-            ),
+            retro_api_version,
+            retro_init,
+            retro_deinit,
+            retro_set_environment,
+            retro_set_video_refresh,
+            retro_set_audio_sample,
+            retro_set_audio_sample_batch,
+            retro_set_input_poll,
+            retro_set_input_state,
+            retro_load_game,
+            retro_unload_game,
+            retro_run,
+            retro_reset,
+            retro_serialize_size,
+            retro_serialize,
+            retro_unserialize,
+            retro_get_memory_data,
+            retro_get_memory_size,
+            retro_get_system_info,
+            retro_get_system_av_info,
         };
 
         // SAFETY: `retro_api_version` is a libretro function with no arguments that reports
