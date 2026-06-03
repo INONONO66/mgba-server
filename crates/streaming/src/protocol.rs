@@ -307,10 +307,11 @@ fn sanitize_client_metrics(value: Option<&serde_json::Value>) -> serde_json::Val
         ("renderedFrames", MAX_CLIENT_COUNTER),
         ("sequenceGaps", MAX_CLIENT_COUNTER),
     ] {
-        if let Some(number) = metrics.get(key).and_then(|value| value.as_f64()) {
-            if number.is_finite() && number >= 0.0 {
-                sanitized.insert(key.to_string(), serde_json::Value::from(number.min(max_value)));
-            }
+        if let Some(number) = metrics.get(key).and_then(|value| value.as_f64())
+            && number.is_finite()
+            && number >= 0.0
+        {
+            sanitized.insert(key.to_string(), serde_json::Value::from(number.min(max_value)));
         }
     }
 

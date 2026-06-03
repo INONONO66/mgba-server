@@ -76,13 +76,16 @@ impl DashboardBroadcast {
 
         {
             let cache = keyframe_cache.read().await;
-            if let Some(kf) = cache.get(&instance_id) {
-                if send_binary_with_backpressure(&mut sender, kf.clone(), config.backpressure_limit)
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
+            if let Some(kf) = cache.get(&instance_id)
+                && send_binary_with_backpressure(
+                    &mut sender,
+                    kf.clone(),
+                    config.backpressure_limit,
+                )
+                .await
+                .is_err()
+            {
+                return;
             }
         }
 
@@ -209,11 +212,11 @@ impl DashboardBroadcast {
                     Message::Close(_) => break,
                     _ => continue,
                 };
-                if let Ok(ViewerControl::Keyframe) = parse_viewer_control_message(&bytes) {
-                    if last_keyframe_request.elapsed() >= Duration::from_millis(KEYFRAME_THROTTLE_MS) {
-                        dashboard_cache.write().await.clear();
-                        last_keyframe_request = Instant::now();
-                    }
+                if let Ok(ViewerControl::Keyframe) = parse_viewer_control_message(&bytes)
+                    && last_keyframe_request.elapsed() >= Duration::from_millis(KEYFRAME_THROTTLE_MS)
+                {
+                    dashboard_cache.write().await.clear();
+                    last_keyframe_request = Instant::now();
                 }
             }
         });
