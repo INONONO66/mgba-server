@@ -1,0 +1,18 @@
+   Compiling grokemon-streaming v0.1.0 (/Users/ino/Develop/mgba-server/crates/streaming)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
+     Running unittests src/lib.rs (target/debug/deps/grokemon_streaming-ef82e81b18054556)
+
+running 4 tests
+test frame_hub::tests::unregister_removes_instance ... ok
+test frame_hub::tests::latest_frame_returns_current ... ok
+test frame_hub::tests::push_and_subscribe ... ok
+test frame_hub::tests::backpressure_drops_old_frames ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests grokemon_streaming
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
