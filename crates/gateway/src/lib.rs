@@ -11,13 +11,16 @@ use axum::{
 use grokemon_auth::{AclService, AuthError, Permission, PrincipalId, SessionId};
 use grokemon_instances::InstanceBackend;
 use grokemon_mgba::{CommandKind, CommandResult, format_message};
+use grokemon_streaming::{FrameHub, InputLogBus, PixelFormat, RawFrame};
 use serde::{Deserialize, Serialize};
-use std::{sync::Arc, time::Duration};
+use std::{io::Cursor, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
 
 pub struct GatewayState<C> {
     acl: Arc<RwLock<AclService>>,
     commands: Arc<C>,
+    frame_hub: Arc<FrameHub>,
+    input_log: Arc<InputLogBus>,
 }
 
 impl<C> Clone for GatewayState<C> {
@@ -25,16 +28,33 @@ impl<C> Clone for GatewayState<C> {
         Self {
             acl: self.acl.clone(),
             commands: self.commands.clone(),
+            frame_hub: self.frame_hub.clone(),
+            input_log: self.input_log.clone(),
         }
     }
 }
 
 impl<C> GatewayState<C> {
-    pub fn new(acl: AclService, commands: Arc<C>) -> Self {
+    pub fn new(
+        acl: AclService,
+        commands: Arc<C>,
+        frame_hub: Arc<FrameHub>,
+        input_log: Arc<InputLogBus>,
+    ) -> Self {
         Self {
             acl: Arc::new(RwLock::new(acl)),
             commands,
+            frame_hub,
+            input_log,
         }
+    }
+
+    pub fn frame_hub(&self) -> &Arc<FrameHub> {
+        &self.frame_hub
+    }
+
+    pub fn input_log(&self) -> &Arc<InputLogBus> {
+        &self.input_log
     }
 }
 
@@ -53,6 +73,10 @@ pub fn app<C: SessionCommandService>(state: GatewayState<C>) -> Router {
         .route(
             "/health",
             get(|| async { Json(serde_json::json!({ "ok": true })) }),
+        )
+        .route(
+            "/ws/sessions/{session_id}/input-log",
+            get(input_log_ws::<C>),
         )
         .nest("/api", api_routes())
         .with_state(state)
@@ -75,6 +99,8 @@ fn api_routes<C: SessionCommandService>() -> Router<GatewayState<C>> {
             "/sessions/{session_id}/memory/readrange",
             get(read_range::<C>),
         )
+        .route("/sessions/{session_id}/core/screenshot", post(screenshot::<C>))
+        .route("/sessions/{session_id}/screenshot", get(screenshot::<C>))
         .route("/sessions/{session_id}/input/tap", post(tap::<C>))
         .route("/sessions/{session_id}/input/hold", post(hold::<C>))
         .route("/sessions/{session_id}/logs", get(logs::<C>))
@@ -96,6 +122,17 @@ struct RangeQuery {
 struct ButtonQuery {
     button: String,
     duration: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WriteQuery {
+    address: String,
+    value: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SlotQuery {
+    slot: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -156,6 +193,123 @@ async fn read_range<C: SessionCommandService>(
     .await
 }
 
+async fn current_frame<C: SessionCommandService>(
+    State(state): State<GatewayState<C>>,
+    headers: HeaderMap,
+    Path(session): Path<String>,
+) -> Response {
+    command_endpoint(
+        state,
+        headers,
+        session,
+        Permission::ReadMemory,
+        CommandKind::FrameCapture,
+        format_message("core.currentFrame", &[] as &[&str]),
+    )
+    .await
+}
+
+async fn write8<C: SessionCommandService>(
+    State(state): State<GatewayState<C>>,
+    headers: HeaderMap,
+    Path(session): Path<String>,
+    Query(query): Query<WriteQuery>,
+) -> Response {
+    command_endpoint(
+        state,
+        headers,
+        session,
+        Permission::SendKey,
+        CommandKind::MemoryRead,
+        format_message("core.write8", &[query.address, query.value]),
+    )
+    .await
+}
+
+async fn write16<C: SessionCommandService>(
+    State(state): State<GatewayState<C>>,
+    headers: HeaderMap,
+    Path(session): Path<String>,
+    Query(query): Query<WriteQuery>,
+) -> Response {
+    command_endpoint(
+        state,
+        headers,
+        session,
+        Permission::SendKey,
+        CommandKind::MemoryRead,
+        format_message("core.write16", &[query.address, query.value]),
+    )
+    .await
+}
+
+async fn write32<C: SessionCommandService>(
+    State(state): State<GatewayState<C>>,
+    headers: HeaderMap,
+    Path(session): Path<String>,
+    Query(query): Query<WriteQuery>,
+) -> Response {
+    command_endpoint(
+        state,
+        headers,
+        session,
+        Permission::SendKey,
+        CommandKind::MemoryRead,
+        format_message("core.write32", &[query.address, query.value]),
+    )
+    .await
+}
+
+async fn save_state<C: SessionCommandService>(
+    State(state): State<GatewayState<C>>,
+    headers: HeaderMap,
+    Path(session): Path<String>,
+    Query(query): Query<SlotQuery>,
+) -> Response {
+    command_endpoint(
+        state,
+        headers,
+        session,
+        Permission::SendKey,
+        CommandKind::State,
+        format_message("core.saveStateSlot", &[query.slot]),
+    )
+    .await
+}
+
+async fn load_state<C: SessionCommandService>(
+    State(state): State<GatewayState<C>>,
+    headers: HeaderMap,
+    Path(session): Path<String>,
+    Query(query): Query<SlotQuery>,
+) -> Response {
+    command_endpoint(
+        state,
+        headers,
+        session,
+        Permission::SendKey,
+        CommandKind::State,
+        format_message("core.loadStateSlot", &[query.slot]),
+    )
+    .await
+}
+
+async fn reset<C: SessionCommandService>(
+    State(state): State<GatewayState<C>>,
+    headers: HeaderMap,
+    Path(session): Path<String>,
+) -> Response {
+    command_endpoint(
+        state,
+        headers,
+        session,
+        Permission::SendKey,
+        CommandKind::Control,
+        format_message("core.reset", &[] as &[&str]),
+    )
+    .await
+}
+
 async fn tap<C: SessionCommandService>(
     State(state): State<GatewayState<C>>,
     headers: HeaderMap,
@@ -210,6 +364,38 @@ async fn stream<C: SessionCommandService>(
     match authorize(&state, &headers, &SessionId::new(session), Permission::ViewStream).await {
         Ok(principal_id) => Json(serde_json::json!({ "ok": true, "principal_id": principal_id.as_str(), "transport": "ws_pending" })).into_response(),
         Err(error) => auth_response(error),
+    }
+}
+
+async fn screenshot<C: SessionCommandService>(
+    State(state): State<GatewayState<C>>,
+    headers: HeaderMap,
+    Path(session): Path<String>,
+) -> Response {
+    let session_id = SessionId::new(session.clone());
+    if let Err(error) = authorize(&state, &headers, &session_id, Permission::ViewStream).await {
+        return auth_response(error);
+    }
+
+    match state.frame_hub.latest_frame(&session).await {
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "error": "no frame available yet" })),
+        )
+            .into_response(),
+        Some(raw_frame) => match xrgb8888_to_png(&raw_frame) {
+            Ok(png_bytes) => (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "image/png")],
+                png_bytes,
+            )
+                .into_response(),
+            Err(error) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response(),
+        },
     }
 }
 
@@ -294,6 +480,29 @@ fn validate_command(command: String) -> Result<String, &'static str> {
                 return Err("invalid range");
             }
         }
+        "core.write8" | "core.write16" | "core.write32" => {
+            let address = parts.next().ok_or("missing address")?;
+            let value = parts.next().ok_or("missing value")?;
+            if parts.next().is_some() || !is_numeric_arg(address) || !is_numeric_arg(value) {
+                return Err("invalid write args");
+            }
+        }
+        "core.saveStateSlot" | "core.loadStateSlot" => {
+            let slot = parts.next().ok_or("missing slot")?;
+            if parts.next().is_some() || !is_decimal_arg(slot) {
+                return Err("invalid slot");
+            }
+        }
+        "core.reset" => {
+            if parts.next().is_some() {
+                return Err("reset takes no args");
+            }
+        }
+        "core.currentFrame" => {
+            if parts.next().is_some() {
+                return Err("currentFrame takes no args");
+            }
+        }
         "mgba-http.button.tap" => {
             let button = parts.next().ok_or("missing button")?;
             if parts.next().is_some() || !is_valid_button(button) {
@@ -328,6 +537,37 @@ fn is_valid_button(value: &str) -> bool {
         value,
         "A" | "B" | "L" | "R" | "Start" | "Select" | "Up" | "Down" | "Left" | "Right"
     )
+}
+
+fn xrgb8888_to_png(frame: &RawFrame) -> Result<Vec<u8>, String> {
+    if frame.pixel_format != PixelFormat::XRGB8888 {
+        return Err("unsupported pixel format".to_string());
+    }
+
+    let width = frame.width;
+    let height = frame.height;
+    let pitch = frame.pitch as usize;
+    let data = &frame.data;
+
+    let mut img = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::new(width, height);
+
+    for y in 0..height {
+        for x in 0..width {
+            let px = (y as usize * pitch) + (x as usize * 4);
+            if px + 3 >= data.len() {
+                return Err("frame buffer is too small".to_string());
+            }
+            let b = data[px];
+            let g = data[px + 1];
+            let r = data[px + 2];
+            img.put_pixel(x, y, image::Rgba([r, g, b, 255]));
+        }
+    }
+
+    let mut png_cursor = Cursor::new(Vec::new());
+    img.write_to(&mut png_cursor, image::ImageFormat::Png)
+        .map_err(|e| e.to_string())?;
+    Ok(png_cursor.into_inner())
 }
 
 async fn authorize<C>(
@@ -376,6 +616,7 @@ mod tests {
     use chrono::Utc;
     use grokemon_auth::{AclService, Role};
     use grokemon_mgba::{CommandPriority, CommandTrace};
+    use grokemon_streaming::{FrameHub, PixelFormat, RawFrame};
     use std::sync::Mutex;
     use tower::ServiceExt;
 
@@ -414,16 +655,19 @@ mod tests {
         }
     }
 
-    fn fixture(role: Role, session: &str) -> (Router, Arc<FakeCommands>, String) {
+    async fn fixture(role: Role, session: &str) -> (Router, Arc<FakeCommands>, String, Arc<FrameHub>) {
         let mut acl = AclService::new();
         let principal = grokemon_auth::PrincipalId::new("principal-a");
         let token = acl.issue_principal_token(principal.clone()).token;
         acl.grant(principal, SessionId::new(session), role);
         let commands = Arc::new(FakeCommands::default());
+        let frame_hub = Arc::new(FrameHub::new());
+        frame_hub.register_instance(session).await;
         (
-            app(GatewayState::new(acl, commands.clone())),
+            app(GatewayState::new(acl, commands.clone(), frame_hub.clone())),
             commands,
             token,
+            frame_hub,
         )
     }
 
@@ -434,7 +678,7 @@ mod tests {
             .oneshot(
                 http::Request::builder()
                     .method("POST")
-                    .uri("/api/sessions/session-a/input/tap?button=A")
+                    .uri("/api/sessions/session-a/mgba-http/button/tap?button=A")
                     .header("x-principal-token", token)
                     .body(axum::body::Body::empty())
                     .unwrap(),
@@ -454,7 +698,7 @@ mod tests {
         let response = app
             .oneshot(
                 http::Request::builder()
-                    .uri("/api/sessions/session-a/memory/read8?address=0xD35E")
+                    .uri("/api/sessions/session-a/core/read8?address=0xD35E")
                     .header("authorization", format!("Bearer {token}"))
                     .body(axum::body::Body::empty())
                     .unwrap(),
@@ -472,7 +716,7 @@ mod tests {
             .oneshot(
                 http::Request::builder()
                     .method("POST")
-                    .uri("/api/sessions/session-b/input/tap?button=A")
+                    .uri("/api/sessions/session-b/mgba-http/button/tap?button=A")
                     .header("x-principal-token", token)
                     .body(axum::body::Body::empty())
                     .unwrap(),
@@ -490,7 +734,7 @@ mod tests {
             .oneshot(
                 http::Request::builder()
                     .method("POST")
-                    .uri("/api/sessions/session-a/input/tap?button=A%2Ccore.read8")
+                    .uri("/api/sessions/session-a/mgba-http/button/tap?button=A%2Ccore.read8")
                     .header("x-principal-token", token)
                     .body(axum::body::Body::empty())
                     .unwrap(),
@@ -507,6 +751,234 @@ mod tests {
         let response = app
             .oneshot(
                 http::Request::builder()
+                    .uri("/api/sessions/session-a/core/readrange?address=0xD35E&length=1%2Ccore.read8")
+                    .header("x-principal-token", token)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(commands.seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn controller_can_write8() {
+        let (app, commands, token) = fixture(Role::Controller, "session-a");
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/api/sessions/session-a/core/write8?address=0xD35E&value=0x42")
+                    .header("x-principal-token", token)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            commands.seen.lock().unwrap()[0],
+            "session-a:MemoryRead:core.write8,0xD35E,0x42<|END|>"
+        );
+    }
+
+    #[tokio::test]
+    async fn controller_can_save_state_slot() {
+        let (app, commands, token) = fixture(Role::Controller, "session-a");
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/api/sessions/session-a/core/savestateslot?slot=3")
+                    .header("x-principal-token", token)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            commands.seen.lock().unwrap()[0],
+            "session-a:State:core.saveStateSlot,3<|END|>"
+        );
+    }
+
+    #[tokio::test]
+    async fn controller_can_load_state_slot() {
+        let (app, commands, token) = fixture(Role::Controller, "session-a");
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/api/sessions/session-a/core/loadstateslot?slot=1")
+                    .header("x-principal-token", token)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            commands.seen.lock().unwrap()[0],
+            "session-a:State:core.loadStateSlot,1<|END|>"
+        );
+    }
+
+    #[tokio::test]
+    async fn controller_can_reset() {
+        let (app, commands, token) = fixture(Role::Controller, "session-a");
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/api/sessions/session-a/core/reset")
+                    .header("x-principal-token", token)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            commands.seen.lock().unwrap()[0],
+            "session-a:Control:core.reset<|END|>"
+        );
+    }
+
+    #[tokio::test]
+    async fn current_frame_returns_capture() {
+        let (app, commands, token) = fixture(Role::Controller, "session-a");
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/api/sessions/session-a/core/currentframe")
+                    .header("x-principal-token", token)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            commands.seen.lock().unwrap()[0],
+            "session-a:FrameCapture:core.currentFrame<|END|>"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_token_returns_unauthorized() {
+        let (app, commands, _) = fixture(Role::Controller, "session-a");
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/api/sessions/session-a/core/reset")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(commands.seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn invalid_write_args_rejected() {
+        let (app, commands, token) = fixture(Role::Controller, "session-a");
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/api/sessions/session-a/core/write8?address=0xD35E&value=notanumber")
+                    .header("x-principal-token", token)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(commands.seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn invalid_slot_rejected() {
+        let (app, commands, token) = fixture(Role::Controller, "session-a");
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/api/sessions/session-a/core/savestateslot?slot=abc")
+                    .header("x-principal-token", token)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(commands.seen.lock().unwrap().is_empty());
+    }
+}
+
+    #[tokio::test]
+    async fn viewer_is_forbidden_from_memory_read() {
+        let (app, commands, token, _) = fixture(Role::Viewer, "session-a").await;
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/api/sessions/session-a/memory/read8?address=0xD35E")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(commands.seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cross_session_token_fails_before_handler() {
+        let (app, commands, token, _) = fixture(Role::Controller, "session-a").await;
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/api/sessions/session-b/input/tap?button=A")
+                    .header("x-principal-token", token)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(commands.seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn invalid_control_args_are_rejected_before_socket_send() {
+        let (app, commands, token, _) = fixture(Role::Controller, "session-a").await;
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/api/sessions/session-a/input/tap?button=A%2Ccore.read8")
+                    .header("x-principal-token", token)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(commands.seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn invalid_memory_args_are_rejected_before_socket_send() {
+        let (app, commands, token, _) = fixture(Role::Controller, "session-a").await;
+        let response = app
+            .oneshot(
+                http::Request::builder()
                     .uri("/api/sessions/session-a/memory/readrange?address=0xD35E&length=1%2Ccore.read8")
                     .header("x-principal-token", token)
                     .body(axum::body::Body::empty())
@@ -516,5 +988,61 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert!(commands.seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn screenshot_returns_503_when_no_frame() {
+        let (app, _, token, _) = fixture(Role::Viewer, "session-a").await;
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/api/sessions/session-a/core/screenshot")
+                    .header("x-principal-token", token)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn screenshot_returns_png_for_latest_frame() {
+        let (app, _, token, frame_hub) = fixture(Role::Viewer, "session-a").await;
+        frame_hub
+            .push_frame(
+                "session-a",
+                RawFrame {
+                    width: 240,
+                    height: 160,
+                    pitch: 240 * 4,
+                    pixel_format: PixelFormat::XRGB8888,
+                    data: vec![0x00, 0x00, 0xff, 0xff].repeat(240 * 160),
+                    sequence: 0,
+                    timestamp_ms: 0,
+                },
+            )
+            .await;
+
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/api/sessions/session-a/core/screenshot")
+                    .header("x-principal-token", token)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get(header::CONTENT_TYPE).unwrap(), "image/png");
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let image = image::load_from_memory(&body).unwrap();
+        assert_eq!(image.width(), 240);
+        assert_eq!(image.height(), 160);
     }
 }

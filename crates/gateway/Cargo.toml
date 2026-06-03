@@ -12,7 +12,9 @@ grokemon-auth = { path = "../auth" }
 grokemon-config = { path = "../config" }
 grokemon-instances = { path = "../instances" }
 grokemon-mgba = { path = "../mgba" }
+grokemon-streaming = { path = "../streaming" }
 http.workspace = true
+image.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

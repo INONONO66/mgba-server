@@ -405,7 +405,9 @@ dependencies = [
  "grokemon-config",
  "grokemon-instances",
  "grokemon-mgba",
+ "grokemon-streaming",
  "http",
+ "image",
  "serde",
  "serde_json",
  "tokio",
@@ -470,6 +472,7 @@ dependencies = [
 name = "grokemon-streaming"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "flate2",
  "image",
  "serde",
@@ -477,6 +480,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
