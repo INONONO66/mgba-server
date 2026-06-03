@@ -23,6 +23,11 @@ pub struct GatewayConfig {
     pub capture_interval_ms: u64,
     pub source_capture_interval_ms: u64,
     pub capture_root: String,
+    pub worker_binary_path: String,
+    pub libretro_core_path: String,
+    pub worker_socket_dir: String,
+    pub worker_shutdown_timeout_ms: u64,
+    pub h264_enabled: bool,
     pub stream_keyframe_interval: u32,
     pub stream_tile_size: u16,
     pub ws_backpressure_limit: usize,
@@ -42,6 +47,11 @@ impl Default for GatewayConfig {
             capture_interval_ms: DEFAULT_CAPTURE_INTERVAL_MS,
             source_capture_interval_ms: DEFAULT_SOURCE_CAPTURE_INTERVAL_MS,
             capture_root: "/tmp/grokemon-captures".to_string(),
+            worker_binary_path: "./target/debug/worker".to_string(),
+            libretro_core_path: "".to_string(),
+            worker_socket_dir: "/tmp/mgba-workers".to_string(),
+            worker_shutdown_timeout_ms: 2_000,
+            h264_enabled: false,
             stream_keyframe_interval: DEFAULT_STREAM_KEYFRAME_INTERVAL,
             stream_tile_size: DEFAULT_STREAM_TILE_SIZE,
             ws_backpressure_limit: DEFAULT_WS_BACKPRESSURE_LIMIT,
@@ -93,6 +103,19 @@ pub fn load_from_env() -> Result<GatewayConfig, ConfigError> {
             u64::MAX,
         )?,
         capture_root: read_string("CAPTURE_ROOT", defaults.capture_root)?,
+        worker_binary_path: read_string("WORKER_BINARY_PATH", defaults.worker_binary_path)?,
+        libretro_core_path: read_string_allow_empty(
+            "LIBRETRO_CORE_PATH",
+            defaults.libretro_core_path,
+        )?,
+        worker_socket_dir: read_string("WORKER_SOCKET_DIR", defaults.worker_socket_dir)?,
+        worker_shutdown_timeout_ms: read_u64(
+            "WORKER_SHUTDOWN_TIMEOUT_MS",
+            defaults.worker_shutdown_timeout_ms,
+            100,
+            30_000,
+        )?,
+        h264_enabled: read_bool("H264_ENABLED", defaults.h264_enabled)?,
         stream_keyframe_interval: read_u32(
             "STREAM_KEYFRAME_INTERVAL",
             defaults.stream_keyframe_interval,
@@ -115,6 +138,27 @@ fn read_string(name: &'static str, default: String) -> Result<String, ConfigErro
     match env::var(name) {
         Ok(value) if value.is_empty() => Err(ConfigError::Empty { name }),
         Ok(value) => Ok(value),
+        Err(_) => Ok(default),
+    }
+}
+
+fn read_string_allow_empty(name: &'static str, default: String) -> Result<String, ConfigError> {
+    match env::var(name) {
+        Ok(value) => Ok(value),
+        Err(_) => Ok(default),
+    }
+}
+
+fn read_bool(name: &'static str, default: bool) -> Result<bool, ConfigError> {
+    match env::var(name) {
+        Ok(value) => match value.as_str() {
+            "true" | "1" => Ok(true),
+            "false" | "0" => Ok(false),
+            _ => Err(ConfigError::ParseInt {
+                name,
+                detail: format!("invalid boolean value: {value}"),
+            }),
+        },
         Err(_) => Ok(default),
     }
 }
@@ -178,6 +222,7 @@ mod tests {
     #[test]
     fn defaults_to_twenty_instances() {
         let _guard = env_lock().lock().unwrap();
+        // SAFETY: test-only, single-threaded test environment
         unsafe {
             env::remove_var("MAX_INSTANCES");
             env::remove_var("ADMIN_TOKEN");
@@ -190,10 +235,12 @@ mod tests {
     #[test]
     fn rejects_more_than_twenty_instances() {
         let _guard = env_lock().lock().unwrap();
+        // SAFETY: test-only, single-threaded test environment
         unsafe {
             env::set_var("MAX_INSTANCES", "21");
         }
         let error = load_from_env().unwrap_err();
+        // SAFETY: test-only, single-threaded test environment
         unsafe {
             env::remove_var("MAX_INSTANCES");
         }
@@ -204,5 +251,35 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn loads_worker_and_streaming_config_from_env() {
+        let _guard = env_lock().lock().unwrap();
+        // SAFETY: test-only, single-threaded test environment
+        unsafe {
+            env::set_var("WORKER_BINARY_PATH", "/tmp/worker");
+            env::set_var("LIBRETRO_CORE_PATH", "");
+            env::set_var("WORKER_SOCKET_DIR", "/tmp/workers");
+            env::set_var("WORKER_SHUTDOWN_TIMEOUT_MS", "2500");
+            env::set_var("H264_ENABLED", "1");
+        }
+
+        let config = load_from_env().unwrap();
+
+        // SAFETY: test-only, single-threaded test environment
+        unsafe {
+            env::remove_var("WORKER_BINARY_PATH");
+            env::remove_var("LIBRETRO_CORE_PATH");
+            env::remove_var("WORKER_SOCKET_DIR");
+            env::remove_var("WORKER_SHUTDOWN_TIMEOUT_MS");
+            env::remove_var("H264_ENABLED");
+        }
+
+        assert_eq!(config.worker_binary_path, "/tmp/worker");
+        assert_eq!(config.libretro_core_path, "");
+        assert_eq!(config.worker_socket_dir, "/tmp/workers");
+        assert_eq!(config.worker_shutdown_timeout_ms, 2500);
+        assert!(config.h264_enabled);
     }
 }
