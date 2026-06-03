@@ -1,0 +1,10 @@
+   Compiling grokemon-streaming v0.1.0 (/Users/ino/Develop/mgba-server/crates/streaming)
+   Compiling grokemon-gateway v0.1.0 (/Users/ino/Develop/mgba-server/crates/gateway)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.07s
+     Running unittests src/lib.rs (target/debug/deps/grokemon_gateway-6afc35c7e1309563)
+
+running 1 test
+test tests::screenshot_returns_503_when_no_frame ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s
+
