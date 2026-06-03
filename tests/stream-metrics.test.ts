@@ -80,7 +80,7 @@ function createFrame(overrides: Partial<CapturedFrame> = {}): CapturedFrame {
     sourceCapturedAtMs: 123,
     tileSize: 16,
     timestampMs: 123,
-    token: "token-a",
+    principalToken: "token-a",
     width: 1,
     ...overrides,
   };

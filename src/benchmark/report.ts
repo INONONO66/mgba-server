@@ -33,7 +33,6 @@ interface InstanceBenchmarkReport {
     serverDroppedFrames?: number;
     sequenceGaps?: number;
   };
-  token?: string;
 }
 
 export interface ResourceSampleReport {
@@ -116,7 +115,6 @@ export function summarize(values: number[]): DistributionSummary {
 
 export function buildInstanceReport(opts: {
   instanceId: string;
-  token?: string;
   receivedAtMs: number[];
   durationMs: number;
   windowEndedAtMs?: number;
@@ -227,7 +225,6 @@ export function buildInstanceReport(opts: {
 
   return {
     instanceId: opts.instanceId,
-    token: opts.token,
     receivedFrames: opts.receivedAtMs.length,
     expectedFrames,
     displayedFps,

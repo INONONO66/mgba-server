@@ -101,7 +101,7 @@ function createFixture(options: FixtureOptions = {}) {
   const streamMetrics = new StreamMetrics();
   const registry: InstanceRegistry = new Map(
     options.instances?.map((instance) => [
-      instance.token,
+      instance.principalToken,
       { info: instance, client: new MgbaSocketClient() },
     ]) ?? []
   );
@@ -136,7 +136,7 @@ function createFixture(options: FixtureOptions = {}) {
 function createInstanceInfo(id: string): InstanceInfo {
   return {
     id,
-    token: `token-${id}`,
+    principalToken: `token-${id}`,
     containerId: `container-${id}`,
     containerHost: "127.0.0.1",
     captureDirectory: `/tmp/grokemon-captures-test/${id}`,
@@ -149,7 +149,7 @@ function createFrame(overrides: Partial<CapturedFrame> = {}): CapturedFrame {
   return {
     instanceIndex: 0,
     instanceId: "instance-a",
-    token: "token-instance-a",
+    principalToken: "token-instance-a",
     changedTiles: 0,
     frameType: StreamFrameType.Keyframe,
     height: 1,

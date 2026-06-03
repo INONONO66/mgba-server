@@ -241,8 +241,8 @@
 
     // ── Constants ───────────────────────────────────────────────────────────────
     const INSTANCE_COUNT = 20;
-    const LEGACY_HEADER_SIZE = 30;
     const HEADER_SIZE = 34;
+    const STREAM_FORMAT = 2;
     const FRAME_KEYFRAME = 1;
     const FRAME_DELTA = 2;
     const FLAG_DEFLATE_RAW = 1;
@@ -352,7 +352,7 @@
 
     async function handleFrame(arrayBuf) {
       const u8 = new Uint8Array(arrayBuf);
-      if (u8.byteLength < LEGACY_HEADER_SIZE) {
+      if (u8.byteLength < HEADER_SIZE) {
         return;
       }
       if (!checkMagic(u8)) {
@@ -360,9 +360,8 @@
       }
 
       const view = new DataView(arrayBuf);
-      const version = u8[4];
-      const headerSize = version >= 2 ? HEADER_SIZE : LEGACY_HEADER_SIZE;
-      if (u8.byteLength < headerSize) {
+      const format = u8[4];
+      if (format !== STREAM_FORMAT) {
         return;
       }
 
@@ -372,8 +371,8 @@
       const width = view.getUint16(16, false);
       const height = view.getUint16(18, false);
       const payloadBytes = view.getUint32(26, false);
-      const metadataBytes = version >= 2 ? view.getUint32(30, false) : 0;
-      const payloadOffset = headerSize + metadataBytes;
+      const metadataBytes = view.getUint32(30, false);
+      const payloadOffset = HEADER_SIZE + metadataBytes;
 
       if (instanceIdx >= INSTANCE_COUNT) {
         return;

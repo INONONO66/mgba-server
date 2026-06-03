@@ -1,8 +1,7 @@
 // biome-ignore-all lint/style/useFilenamingConvention: Existing multi modules use PascalCase filenames.
 
 const STREAM_MAGIC = "PSMG";
-const STREAM_VERSION = 2;
-export const LEGACY_STREAM_HEADER_SIZE = 30;
+const STREAM_FORMAT = 2;
 export const STREAM_HEADER_SIZE = 34;
 export const VIEWER_CONTROL_MAX_BYTES = 4096;
 const MAX_CLIENT_COUNTER = 10_000_000;
@@ -49,7 +48,7 @@ interface StreamFrameEnvelope {
   sequence: number;
   tileSize: number;
   timestampMs: number;
-  version: number;
+  format: number;
   width: number;
 }
 
@@ -85,7 +84,7 @@ export function encodeStreamFrame(frame: EncodableStreamFrame): Buffer {
   const metadata = encodeMetadata(frame.metadata);
   const header = Buffer.allocUnsafe(STREAM_HEADER_SIZE);
   header.write(STREAM_MAGIC, 0, "ascii");
-  header.writeUInt8(STREAM_VERSION, 4);
+  header.writeUInt8(STREAM_FORMAT, 4);
   header.writeUInt8(frame.frameType, 5);
   header.writeUInt8(frame.instanceIndex % 256, 6);
   header.writeUInt8(frame.flags ?? StreamFrameFlags.None, 7);
@@ -101,33 +100,30 @@ export function encodeStreamFrame(frame: EncodableStreamFrame): Buffer {
 }
 
 export function decodeStreamFrame(data: Buffer): StreamFrameEnvelope | undefined {
-  if (data.byteLength < LEGACY_STREAM_HEADER_SIZE) {
+  if (data.byteLength < STREAM_HEADER_SIZE) {
     return undefined;
   }
   if (data.toString("ascii", 0, 4) !== STREAM_MAGIC) {
     return undefined;
   }
 
-  const version = data.readUInt8(4);
-  const headerSize = version >= 2 ? STREAM_HEADER_SIZE : LEGACY_STREAM_HEADER_SIZE;
-  if (data.byteLength < headerSize) {
+  const format = data.readUInt8(4);
+  if (format !== STREAM_FORMAT) {
     return undefined;
   }
 
   const payloadBytes = data.readUInt32BE(26);
-  const metadataBytes = version >= 2 ? data.readUInt32BE(30) : 0;
-  const payloadOffset = headerSize + metadataBytes;
+  const metadataBytes = data.readUInt32BE(30);
+  const payloadOffset = STREAM_HEADER_SIZE + metadataBytes;
   const expectedLength = payloadOffset + payloadBytes;
   if (data.byteLength !== expectedLength) {
     return undefined;
   }
 
-  const metadata = version >= 2
-    ? decodeMetadata(data.subarray(headerSize, payloadOffset))
-    : undefined;
+  const metadata = decodeMetadata(data.subarray(STREAM_HEADER_SIZE, payloadOffset));
 
   return {
-    version,
+    format,
     frameType: data.readUInt8(5) as StreamFrameType,
     instanceIndex: data.readUInt8(6),
     flags: data.readUInt8(7),

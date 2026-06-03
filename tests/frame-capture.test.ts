@@ -57,7 +57,7 @@ describe('FrameCapture', () => {
     const frames: CapturedFrame[] = []
     capture.onFrame((frame) => frames.push(frame))
     const captureOne = (capture as unknown as {
-      captureOne(token: string, instanceIndex: number): Promise<void>
+      captureOne(principalToken: string, instanceIndex: number): Promise<void>
     }).captureOne.bind(capture)
 
     await captureOne('token-a', 0)
@@ -93,7 +93,7 @@ describe('FrameCapture', () => {
     const frames: CapturedFrame[] = []
     capture.onFrame((frame) => frames.push(frame))
     const captureOne = (capture as unknown as {
-      captureOne(token: string, instanceIndex: number): Promise<void>
+      captureOne(principalToken: string, instanceIndex: number): Promise<void>
     }).captureOne.bind(capture)
 
     await captureOne('token-a', 0)
@@ -140,7 +140,7 @@ describe('FrameCapture', () => {
     const frames: CapturedFrame[] = []
     capture.onFrame((frame) => frames.push(frame))
     const captureOne = (capture as unknown as {
-      captureOne(token: string, instanceIndex: number): Promise<void>
+      captureOne(principalToken: string, instanceIndex: number): Promise<void>
     }).captureOne.bind(capture)
 
     await captureOne('token-a', 0)
@@ -195,7 +195,7 @@ describe('FrameCapture', () => {
     const frames: CapturedFrame[] = []
     capture.onFrame((frame) => frames.push(frame))
     const captureOne = (capture as unknown as {
-      captureOne(token: string, instanceIndex: number): Promise<void>
+      captureOne(principalToken: string, instanceIndex: number): Promise<void>
     }).captureOne.bind(capture)
 
     await captureOne('token-a', 0)
@@ -253,7 +253,7 @@ function createRegistryWithClient(client: { send(message: string): Promise<strin
       {
         info: {
           id: 'instance-a',
-          token: 'token-a',
+          principalToken: 'token-a',
           containerId: 'container-a',
           containerHost: '127.0.0.1',
           captureDirectory: '/tmp/grokemon-captures-test/instance-a',

@@ -15,7 +15,7 @@ import { FrameCapture } from "../streaming/FrameCapture.js";
 import { InputLogBus } from "../streaming/InputLog.js";
 import { StreamMetrics } from "../streaming/StreamMetrics.js";
 import { createAdminRouter, type IInstanceManager } from "./AdminRouter.js";
-import { createApiRouter, createV2ApiRouter, type InstanceRegistry } from "./ApiRouter.js";
+import { createApiRouter, type InstanceRegistry } from "./ApiRouter.js";
 
 export interface GatewayServer {
   httpServer: ReturnType<typeof createServer>;
@@ -53,11 +53,9 @@ export function createGatewayServer(
   );
   const inputLogOptions = {
     inputLog,
-    onInputCompleted: (token: string) => frameCapture.forceKeyframe(token),
+    onInputCompleted: (principalToken: string) => frameCapture.forceKeyframe(principalToken),
   };
-  app.route("/api/v2/sessions/:sessionId", createV2ApiRouter(registry, inputLogOptions));
-  app.route("/api/v1/:token", createApiRouter(registry, inputLogOptions));
-  app.route("/", createApiRouter(registry, { ...inputLogOptions, fallbackToSingleInstance: true }));
+  app.route("/api/sessions/:sessionId", createApiRouter(registry, inputLogOptions));
 
   const httpServer = createServer(getRequestListener(app.fetch));
   const wss = new WebSocketServer({ server: httpServer });
@@ -66,7 +64,7 @@ export function createGatewayServer(
     registry,
     config.wsBackpressureLimit,
     streamMetrics,
-    { inputLog, requestKeyframe: (token) => frameCapture.forceKeyframe(token) }
+    { inputLog, requestKeyframe: (principalToken) => frameCapture.forceKeyframe(principalToken) }
   );
   frameCapture.onFrame((frame) => {
     streamMetrics.recordProduced(frame);

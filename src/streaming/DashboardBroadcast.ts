@@ -3,7 +3,7 @@ import type { IncomingMessage } from "node:http";
 
 import type { RawData, WebSocket, WebSocketServer } from "ws";
 
-import type { InstanceRegistry } from "../gateway/ApiRouter.js";
+import { bearerToken, defaultPrincipalAcl, type InstanceEntry, type InstanceRegistry, type PrincipalAccessControl, type PrincipalPermission } from "../gateway/ApiRouter.js";
 import type { CapturedFrame } from "./FrameCapture.js";
 import { type InputLogBus, type InputLogEvent } from "./InputLog.js";
 import type { StreamMetrics } from "./StreamMetrics.js";
@@ -20,22 +20,24 @@ const KEYFRAME_REQUEST_THROTTLE_MS = 500;
 
 interface DashboardBroadcastOptions {
   inputLog?: InputLogBus;
-  requestKeyframe?: (token?: string) => void;
+  principalAcl?: PrincipalAccessControl;
+  requestKeyframe?: (principalToken?: string) => void;
 }
 
 export class DashboardBroadcast {
   private readonly dashboardClients = new Set<WebSocket>();
   private readonly instanceClients = new Map<string, Set<WebSocket>>();
   private readonly inputLogClients = new Map<string, Set<WebSocket>>();
-  private readonly keyframesByToken = new Map<string, Buffer>();
-  private readonly recoveryTokensByClient = new WeakMap<WebSocket, Set<string>>();
+  private readonly keyframesByPrincipalToken = new Map<string, Buffer>();
+  private readonly recoveryPrincipalTokensByClient = new WeakMap<WebSocket, Set<string>>();
   private readonly lastKeyframeRequestByClient = new WeakMap<WebSocket, Map<string, number>>();
   private readonly wss: WebSocketServer;
   private readonly registry: InstanceRegistry;
   private readonly backpressureLimit: number;
   private readonly metrics?: StreamMetrics;
   private readonly inputLog?: InputLogBus;
-  private readonly requestKeyframe?: (token?: string) => void;
+  private readonly principalAcl?: PrincipalAccessControl;
+  private readonly requestKeyframe?: (principalToken?: string) => void;
 
   constructor(
     wss: WebSocketServer,
@@ -49,6 +51,7 @@ export class DashboardBroadcast {
     this.backpressureLimit = backpressureLimit;
     this.metrics = metrics;
     this.inputLog = options.inputLog;
+    this.principalAcl = options.principalAcl;
     this.requestKeyframe = options.requestKeyframe;
     this.setupWebSocketServer();
   }
@@ -56,7 +59,7 @@ export class DashboardBroadcast {
   broadcastFrame(frame: CapturedFrame): void {
     const binary = encodeFrame(frame);
     if (frame.frameType === StreamFrameType.Keyframe) {
-      this.keyframesByToken.set(frame.token, binary);
+      this.keyframesByPrincipalToken.set(frame.principalToken, binary);
     }
 
     for (const ws of this.dashboardClients) {
@@ -64,7 +67,7 @@ export class DashboardBroadcast {
       this.metrics?.recordDelivery(frame, "dashboard", delivered);
     }
 
-    const instanceSubscribers = this.instanceClients.get(frame.token);
+    const instanceSubscribers = this.instanceClients.get(frame.principalToken);
     if (!instanceSubscribers) {
       return;
     }
@@ -89,95 +92,127 @@ export class DashboardBroadcast {
       this.attachControlHandlers(ws);
       ws.on("close", () => this.dashboardClients.delete(ws));
       ws.on("error", () => this.dashboardClients.delete(ws));
-      for (const [token, keyframe] of this.keyframesByToken.entries()) {
-        if (!this.registry.has(token)) {
-          this.keyframesByToken.delete(token);
+      for (const [principalToken, keyframe] of this.keyframesByPrincipalToken.entries()) {
+        if (!this.registry.has(principalToken)) {
+          this.keyframesByPrincipalToken.delete(principalToken);
           continue;
         }
-        this.sendCachedKeyframe(ws, token, keyframe);
+        this.sendCachedKeyframe(ws, principalToken, keyframe);
       }
       return;
     }
 
 
-    if (url.startsWith("/ws/input-log/")) {
-      const token = safeDecodeURIComponent(url.slice("/ws/input-log/".length));
-      this.handleInputLogConnection(ws, token);
-      return;
-    }
-
-    if (url.startsWith("/ws/logs/")) {
-      const token = safeDecodeURIComponent(url.slice("/ws/logs/".length));
-      this.handleInputLogConnection(ws, token);
-      return;
-    }
-    if (url.startsWith("/ws/instance/")) {
-      const token = safeDecodeURIComponent(url.slice("/ws/instance/".length));
-      if (token === undefined) {
-        ws.close(4000, "Invalid token");
+    const streamConnection = this.resolveSessionConnection(url, req, "/ws/sessions/", "/stream", "view-stream");
+    if (streamConnection.matched) {
+      if (!streamConnection.entry) {
+        ws.close(streamConnection.closeCode, streamConnection.closeReason);
         return;
       }
+      this.handleStreamConnection(ws, streamConnection.principalToken);
+      return;
+    }
 
-      if (!this.registry.has(token)) {
-        ws.close(4001, "Unknown token");
+    const inputLogConnection = this.resolveSessionConnection(url, req, "/ws/sessions/", "/input-log", "view-input-logs");
+    if (inputLogConnection.matched) {
+      if (!inputLogConnection.entry) {
+        ws.close(inputLogConnection.closeCode, inputLogConnection.closeReason);
         return;
       }
-
-      let clients = this.instanceClients.get(token);
-      if (!clients) {
-        clients = new Set<WebSocket>();
-        this.instanceClients.set(token, clients);
-      }
-
-      clients.add(ws);
-      this.attachControlHandlers(ws, token);
-      ws.on("close", () => {
-        clients.delete(ws);
-        if (clients.size === 0) {
-          this.instanceClients.delete(token);
-        }
-      });
-      ws.on("error", () => {
-        clients.delete(ws);
-        if (clients.size === 0) {
-          this.instanceClients.delete(token);
-        }
-      });
-      const keyframe = this.keyframesByToken.get(token);
-      if (keyframe) {
-        this.sendCachedKeyframe(ws, token, keyframe);
-      } else {
-        this.requestKeyframeThrottled(ws, token);
-      }
+      this.handleInputLogConnection(ws, inputLogConnection.entry, inputLogConnection.principalToken);
       return;
     }
 
     ws.close(4000, "Unknown endpoint");
   }
 
-  private handleInputLogConnection(ws: WebSocket, token: string | undefined): void {
-    if (token === undefined) {
-      ws.close(4000, "Invalid token");
-      return;
+
+  private resolveSessionConnection(
+    rawUrl: string,
+    req: IncomingMessage,
+    prefix: string,
+    suffix: string,
+    permission: PrincipalPermission,
+  ): {
+    closeCode: number;
+    closeReason: string;
+    entry?: InstanceEntry;
+    matched: boolean;
+    principalToken: string;
+  } {
+    const parsed = parseWsUrl(rawUrl);
+    const pathname = parsed?.pathname ?? rawUrl.split("?", 1)[0] ?? "";
+    if (!pathname.startsWith(prefix) || !pathname.endsWith(suffix)) {
+      return { closeCode: 4000, closeReason: "Unknown endpoint", matched: false, principalToken: "" };
     }
 
-    const entry = this.registry.get(token);
-    if (!entry) {
-      ws.close(4001, "Unknown token");
-      return;
+    const sessionId = safeDecodeURIComponent(pathname.slice(prefix.length, -suffix.length));
+    if (sessionId === undefined || sessionId === "") {
+      return { closeCode: 4000, closeReason: "Invalid session", matched: true, principalToken: "" };
     }
 
-    let clients = this.inputLogClients.get(token);
+    const principalToken = parsed?.searchParams.get("principal_token") ?? bearerToken(req.headers.authorization);
+    if (principalToken === undefined || principalToken === "") {
+      return { closeCode: 4001, closeReason: "Unauthorized", matched: true, principalToken: "" };
+    }
+
+    const entryRecord = Array.from(this.registry.entries()).find(([, candidate]) => candidate.info.id === sessionId);
+    if (entryRecord === undefined) {
+      return { closeCode: 4001, closeReason: "Unknown session", matched: true, principalToken: "" };
+    }
+
+    const [sessionPrincipalToken, entry] = entryRecord;
+    const acl = this.principalAcl ?? defaultPrincipalAcl(this.registry);
+    if (acl.authorize(principalToken, sessionId, permission) === undefined) {
+      return { closeCode: 4001, closeReason: "Unauthorized", matched: true, principalToken: "" };
+    }
+
+    return { closeCode: 1000, closeReason: "", entry, matched: true, principalToken: sessionPrincipalToken };
+  }
+
+
+  private handleStreamConnection(ws: WebSocket, principalToken: string): void {
+    let clients = this.instanceClients.get(principalToken);
     if (!clients) {
       clients = new Set<WebSocket>();
-      this.inputLogClients.set(token, clients);
+      this.instanceClients.set(principalToken, clients);
+    }
+
+    clients.add(ws);
+    this.attachControlHandlers(ws, principalToken);
+    ws.on("close", () => {
+      clients.delete(ws);
+      if (clients.size === 0) {
+        this.instanceClients.delete(principalToken);
+      }
+    });
+    ws.on("error", () => {
+      clients.delete(ws);
+      if (clients.size === 0) {
+        this.instanceClients.delete(principalToken);
+      }
+    });
+    const keyframe = this.keyframesByPrincipalToken.get(principalToken);
+    if (keyframe) {
+      this.sendCachedKeyframe(ws, principalToken, keyframe);
+    } else {
+      this.requestKeyframeThrottled(ws, principalToken);
+    }
+  }
+
+  private handleInputLogConnection(ws: WebSocket, entry: InstanceEntry, principalToken: string): void {
+
+    let clients = this.inputLogClients.get(principalToken);
+    if (!clients) {
+      clients = new Set<WebSocket>();
+      this.inputLogClients.set(principalToken, clients);
     }
 
     clients.add(ws);
     const cleanup = () => {
       clients?.delete(ws);
       if (clients?.size === 0) {
-        this.inputLogClients.delete(token);
+        this.inputLogClients.delete(principalToken);
       }
       unsubscribe();
     };
@@ -196,7 +231,7 @@ export class DashboardBroadcast {
     return sendJsonWithBackpressure(ws, { type: "input-log", event }, this.backpressureLimit);
   }
 
-  private attachControlHandlers(ws: WebSocket, token?: string): void {
+  private attachControlHandlers(ws: WebSocket, principalToken?: string): void {
     ws.on("message", (data) => {
       if (rawDataByteLength(data) > VIEWER_CONTROL_MAX_BYTES) {
         return;
@@ -208,60 +243,60 @@ export class DashboardBroadcast {
       }
 
       if (message.type === "keyframe") {
-        if (token !== undefined) {
-          this.requestKeyframeThrottled(ws, token);
+        if (principalToken !== undefined) {
+          this.requestKeyframeThrottled(ws, principalToken);
         }
         return;
       }
 
-      const instanceId = token === undefined ? undefined : this.registry.get(token)?.info.id;
+      const instanceId = principalToken === undefined ? undefined : this.registry.get(principalToken)?.info.id;
       this.metrics?.recordClientMetrics(instanceId, message.metrics);
     });
   }
 
-  private sendCachedKeyframe(ws: WebSocket, token: string, keyframe: Buffer): void {
+  private sendCachedKeyframe(ws: WebSocket, principalToken: string, keyframe: Buffer): void {
     const delivered = sendWithBackpressure(ws, keyframe, this.backpressureLimit);
     if (delivered) {
-      this.recoveryTokensByClient.get(ws)?.delete(token);
+      this.recoveryPrincipalTokensByClient.get(ws)?.delete(principalToken);
       return;
     }
 
-    this.markNeedsKeyframe(ws, token);
-    this.requestKeyframeThrottled(ws, token);
+    this.markNeedsKeyframe(ws, principalToken);
+    this.requestKeyframeThrottled(ws, principalToken);
   }
 
   private sendFrameToClient(ws: WebSocket, frame: CapturedFrame, binary: Buffer): boolean {
-    const recoveryTokens = this.recoveryTokensByClient.get(ws);
-    if (frame.frameType !== StreamFrameType.Keyframe && recoveryTokens?.has(frame.token)) {
-      this.requestKeyframeThrottled(ws, frame.token);
+    const recoveryPrincipalTokens = this.recoveryPrincipalTokensByClient.get(ws);
+    if (frame.frameType !== StreamFrameType.Keyframe && recoveryPrincipalTokens?.has(frame.principalToken)) {
+      this.requestKeyframeThrottled(ws, frame.principalToken);
       return false;
     }
 
     const delivered = sendWithBackpressure(ws, binary, this.backpressureLimit);
     if (!delivered) {
-      this.markNeedsKeyframe(ws, frame.token);
-      this.requestKeyframeThrottled(ws, frame.token);
+      this.markNeedsKeyframe(ws, frame.principalToken);
+      this.requestKeyframeThrottled(ws, frame.principalToken);
       return false;
     }
 
     if (frame.frameType === StreamFrameType.Keyframe) {
-      recoveryTokens?.delete(frame.token);
+      recoveryPrincipalTokens?.delete(frame.principalToken);
     }
 
     return true;
   }
 
-  private markNeedsKeyframe(ws: WebSocket, token: string): void {
-    let recoveryTokens = this.recoveryTokensByClient.get(ws);
-    if (!recoveryTokens) {
-      recoveryTokens = new Set<string>();
-      this.recoveryTokensByClient.set(ws, recoveryTokens);
+  private markNeedsKeyframe(ws: WebSocket, principalToken: string): void {
+    let recoveryPrincipalTokens = this.recoveryPrincipalTokensByClient.get(ws);
+    if (!recoveryPrincipalTokens) {
+      recoveryPrincipalTokens = new Set<string>();
+      this.recoveryPrincipalTokensByClient.set(ws, recoveryPrincipalTokens);
     }
-    recoveryTokens.add(token);
+    recoveryPrincipalTokens.add(principalToken);
   }
 
-  private requestKeyframeThrottled(ws: WebSocket, token: string | undefined): void {
-    const throttleKey = token ?? "*";
+  private requestKeyframeThrottled(ws: WebSocket, principalToken: string | undefined): void {
+    const throttleKey = principalToken ?? "*";
     let requests = this.lastKeyframeRequestByClient.get(ws);
     if (!requests) {
       requests = new Map<string, number>();
@@ -274,7 +309,7 @@ export class DashboardBroadcast {
     }
 
     requests.set(throttleKey, now);
-    this.requestKeyframe?.(token);
+    this.requestKeyframe?.(principalToken);
   }
 }
 
@@ -314,6 +349,14 @@ function sendWithBackpressure(
 
   ws.send(data, { binary }, () => undefined);
   return true;
+}
+
+function parseWsUrl(value: string): URL | undefined {
+  try {
+    return new URL(value, "http://localhost");
+  } catch {
+    return undefined;
+  }
 }
 
 function safeDecodeURIComponent(value: string): string | undefined {

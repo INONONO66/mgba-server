@@ -29,7 +29,7 @@ export interface CapturedFrame {
   sourceCapturedAtMs: number
   tileSize: number
   timestampMs: number
-  token: string
+  principalToken: string
   width: number
 }
 
@@ -51,10 +51,10 @@ interface FrameCaptureOptions {
 
 export class FrameCapture {
   private timer?: NodeJS.Timeout
-  private instanceKeys: string[] = []
+  private principalTokens: string[] = []
   private readonly handlers: FrameHandler[] = []
-  private readonly inFlightTokens = new Set<string>()
-  private readonly forceRequestedDuringInFlight = new Set<string>()
+  private readonly inFlightPrincipalTokens = new Set<string>()
+  private readonly forceRequestedDuringInFlightPrincipalTokens = new Set<string>()
   private readonly previousFrames = new Map<string, PreviousFrameState>()
   private readonly registry: InstanceRegistry
   private readonly captureIntervalMs: number
@@ -83,12 +83,12 @@ export class FrameCapture {
     this.handlers.push(handler)
   }
 
-  forceKeyframe(token?: string): void {
-    if (token !== undefined) {
-      const entry = this.registry.get(token)
+  forceKeyframe(principalToken?: string): void {
+    if (principalToken !== undefined) {
+      const entry = this.registry.get(principalToken)
       if (entry) {
-        if (this.inFlightTokens.has(token)) {
-          this.forceRequestedDuringInFlight.add(token)
+        if (this.inFlightPrincipalTokens.has(principalToken)) {
+          this.forceRequestedDuringInFlightPrincipalTokens.add(principalToken)
           return
         }
         const previous = this.previousFrames.get(entry.info.id)
@@ -124,19 +124,19 @@ export class FrameCapture {
   }
 
   private async captureAll(): Promise<void> {
-    this.instanceKeys = Array.from(this.registry.keys())
+    this.principalTokens = Array.from(this.registry.keys())
     await Promise.all(
-      this.instanceKeys.map((token, instanceIndex) => this.captureOne(token, instanceIndex))
+      this.principalTokens.map((principalToken, instanceIndex) => this.captureOne(principalToken, instanceIndex))
     )
   }
 
-  private async captureOne(token: string, instanceIndex: number): Promise<void> {
-    if (this.inFlightTokens.has(token)) {
-      this.emitRepeatFrame(token, instanceIndex)
+  private async captureOne(principalToken: string, instanceIndex: number): Promise<void> {
+    if (this.inFlightPrincipalTokens.has(principalToken)) {
+      this.emitRepeatFrame(principalToken, instanceIndex)
       return
     }
 
-    const entry = this.registry.get(token)
+    const entry = this.registry.get(principalToken)
     if (!entry) {
       return
     }
@@ -146,11 +146,11 @@ export class FrameCapture {
       previous.forceKeyframe ||
       Date.now() - previous.sourceCapturedAtMs >= this.sourceCaptureIntervalMs
     if (!dueForSourceCapture) {
-      this.emitRepeatFrame(token, instanceIndex)
+      this.emitRepeatFrame(principalToken, instanceIndex)
       return
     }
 
-    this.inFlightTokens.add(token)
+    this.inFlightPrincipalTokens.add(principalToken)
     const sourceCaptureStartedAtMs = Date.now()
     try {
       const response = await entry.client.send(formatMessage('core.screenshot', CONTAINER_CAPTURE_PATH))
@@ -172,7 +172,7 @@ export class FrameCapture {
       const sourceCaptureCount = (previous?.sourceCaptureCount ?? 0) + 1
       const dimensionsChanged = previous?.width !== width || previous?.height !== height
       const forceKeyframe = previous?.forceKeyframe ?? false
-      const forceNextKeyframe = this.forceRequestedDuringInFlight.delete(token)
+      const forceNextKeyframe = this.forceRequestedDuringInFlightPrincipalTokens.delete(principalToken)
       const periodicKeyframe = sourceCaptureCount % this.keyframeInterval === 0
       const isKeyframe = !previous || dimensionsChanged || forceKeyframe || periodicKeyframe
       const encoded = isKeyframe
@@ -203,7 +203,7 @@ export class FrameCapture {
         sourceCapturedAtMs: timestampMs,
         tileSize: this.tileSize,
         timestampMs,
-        token,
+        principalToken,
         width,
       }
 
@@ -213,12 +213,12 @@ export class FrameCapture {
     } catch {
       return
     } finally {
-      this.inFlightTokens.delete(token)
+      this.inFlightPrincipalTokens.delete(principalToken)
     }
   }
 
-  private emitRepeatFrame(token: string, instanceIndex: number): void {
-    const entry = this.registry.get(token)
+  private emitRepeatFrame(principalToken: string, instanceIndex: number): void {
+    const entry = this.registry.get(principalToken)
     if (!entry) {
       return
     }
@@ -248,7 +248,7 @@ export class FrameCapture {
       sourceCapturedAtMs: previous.sourceCapturedAtMs,
       tileSize: this.tileSize,
       timestampMs: Date.now(),
-      token,
+      principalToken,
       width: previous.width,
     }
 

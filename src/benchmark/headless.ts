@@ -53,7 +53,7 @@ interface AdminInstance {
   containerId: string;
   id: string;
   status: string;
-  token: string;
+  principalToken: string;
 }
 
 interface PendingReflectionProbe {
@@ -277,7 +277,8 @@ async function openCaptureSocket(
   capture: InstanceCapture
 ): Promise<void> {
   const ws = new WebSocket(
-    `${toWsBaseUrl(options.baseUrl)}/ws/instance/${encodeURIComponent(capture.instance.token)}`
+    `${toWsBaseUrl(options.baseUrl)}/ws/sessions/${encodeURIComponent(capture.instance.id)}/stream`,
+    { headers: principalHeaders(capture.instance.principalToken) as Record<string, string> }
   );
   capture.ws = ws;
 
@@ -397,8 +398,8 @@ async function issueLatencyProbe(
   capture: InstanceCapture
 ): Promise<void> {
   const keySend = measureTextRequest(
-    `${options.baseUrl}/api/v2/sessions/${encodeURIComponent(capture.instance.id)}/mgba-http/button/tap?button=A`,
-    { method: "POST", headers: principalHeaders(capture.instance.token) },
+    `${options.baseUrl}/api/sessions/${encodeURIComponent(capture.instance.id)}/mgba-http/button/tap?button=A`,
+    { method: "POST", headers: principalHeaders(capture.instance.principalToken) },
     capture.keySendLatencyMs
   )
     .then((result) => {
@@ -417,8 +418,8 @@ async function issueLatencyProbe(
     });
 
   const memoryRead = measureTextRequest(
-    `${options.baseUrl}/api/v2/sessions/${encodeURIComponent(capture.instance.id)}/core/read8?address=0x00000000`,
-    { method: "GET", headers: principalHeaders(capture.instance.token) },
+    `${options.baseUrl}/api/sessions/${encodeURIComponent(capture.instance.id)}/core/read8?address=0x00000000`,
+    { method: "GET", headers: principalHeaders(capture.instance.principalToken) },
     capture.memoryReadLatencyMs
   ).catch(() => {
     capture.timestampChainFailures += 1;
@@ -427,13 +428,6 @@ async function issueLatencyProbe(
   await Promise.all([
     keySend,
     memoryRead,
-    measureTextRequest(
-      `${options.baseUrl}/api/v1/${encodeURIComponent(capture.instance.token)}/core/read8?address=0x00000000`,
-      { method: "GET" },
-      []
-    ).catch(() => {
-      capture.timestampChainFailures += 1;
-    }),
   ]);
 }
 
@@ -464,8 +458,8 @@ async function measureTextRequest(
   };
 }
 
-function principalHeaders(token: string): HeadersInit {
-  return { Authorization: `Bearer ${token}` };
+function principalHeaders(principalToken: string): HeadersInit {
+  return { Authorization: `Bearer ${principalToken}` };
 }
 
 function recordScreenReflection(

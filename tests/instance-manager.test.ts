@@ -196,8 +196,8 @@ describe('InstanceManager', () => {
       },
     ])
     expect(mgbaMock.clients[0]?.connectCalls).toEqual([{ host: info.containerHost, port: 8888 }])
-    expect(registry.get(info.token)?.info).toBe(info)
-    expect(manager.getByToken(info.token)).toBe(info)
+    expect(registry.get(info.principalToken)?.info).toBe(info)
+    expect(manager.getByPrincipalToken(info.principalToken)).toBe(info)
   })
 
   it('cleans up the container and capture directory when socket readiness fails', async () => {
@@ -226,7 +226,7 @@ describe('InstanceManager', () => {
 
     expect(dockerMock.stoppedContainers).toEqual([info.containerId])
     expect(mgbaMock.clients[0]?.disconnectCalls).toBe(1)
-    expect(registry.has(info.token)).toBe(false)
+    expect(registry.has(info.principalToken)).toBe(false)
     expect(fsMock.rm).toHaveBeenCalledWith(info.captureDirectory, { force: true, recursive: true })
     expect(manager.get(info.id)).toBeUndefined()
   })
@@ -240,7 +240,7 @@ describe('InstanceManager', () => {
     await expect(manager.destroy(info.id)).rejects.toThrow('remove failed')
 
     expect(manager.get(info.id)?.status).toBe('error')
-    expect(registry.has(info.token)).toBe(true)
+    expect(registry.has(info.principalToken)).toBe(true)
     expect(mgbaMock.clients[0]?.disconnectCalls).toBe(0)
   })
 
@@ -304,20 +304,20 @@ describe('InstanceManager', () => {
   })
 
 
-  it('stops legacy managed containers that do not have a capture directory label', async () => {
+  it('stops managed containers that do not have a capture directory label', async () => {
     dockerMock.listedContainers.push({
-      id: 'container-legacy',
-      instanceId: 'instance-legacy',
-      host: 'grokemon-instance-legacy',
+      id: 'container-unlabeled',
+      instanceId: 'instance-unlabeled',
+      host: 'grokemon-instance-unlabeled',
     })
-    dockerMock.runningContainers.set('container-legacy', true)
+    dockerMock.runningContainers.set('container-unlabeled', true)
     const registry: InstanceRegistry = new Map()
     const manager = new InstanceManager(createConfig(), registry)
 
     await manager.reconstruct()
 
-    expect(manager.get('instance-legacy')).toBeUndefined()
-    expect(dockerMock.stoppedContainers).toEqual(['container-legacy'])
+    expect(manager.get('instance-unlabeled')).toBeUndefined()
+    expect(dockerMock.stoppedContainers).toEqual(['container-unlabeled'])
     expect(registry.size).toBe(0)
   })
 
@@ -336,12 +336,12 @@ describe('InstanceManager', () => {
 
     const info = manager.get('instance-existing')
     expect(info?.containerId).toBe('container-existing')
-    expect(info?.token).toEqual(expect.any(String))
-    expect(info?.token).not.toBe('')
+    expect(info?.principalToken).toEqual(expect.any(String))
+    expect(info?.principalToken).not.toBe('')
     expect(info?.containerHost).toBe('grokemon-instance-existing')
     expect(info?.captureDirectory).toBe('/tmp/grokemon-captures-test/instance-existing')
     expect(info?.status).toBe('running')
-    expect(registry.get(info?.token ?? '')?.info).toBe(info)
+    expect(registry.get(info?.principalToken ?? '')?.info).toBe(info)
     expect(mgbaMock.clients[0]?.connectCalls).toEqual([{ host: 'grokemon-instance-existing', port: 8888 }])
   })
 })

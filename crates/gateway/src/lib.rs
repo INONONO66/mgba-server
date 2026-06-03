@@ -51,11 +51,11 @@ pub fn app<C: SessionCommandService>(state: GatewayState<C>) -> Router {
             "/health",
             get(|| async { Json(serde_json::json!({ "ok": true })) }),
         )
-        .nest("/api/v2", v2_routes())
+        .nest("/api", api_routes())
         .with_state(state)
 }
 
-fn v2_routes<C: SessionCommandService>() -> Router<GatewayState<C>> {
+fn api_routes<C: SessionCommandService>() -> Router<GatewayState<C>> {
     Router::new()
         .route("/sessions/{session_id}/memory/read8", get(read8::<C>))
         .route("/sessions/{session_id}/memory/read16", get(read16::<C>))
@@ -416,13 +416,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn controller_can_send_v2_key_command() {
+    async fn controller_can_send_key_command() {
         let (app, commands, token) = fixture(Role::Controller, "session-a");
         let response = app
             .oneshot(
                 http::Request::builder()
                     .method("POST")
-                    .uri("/api/v2/sessions/session-a/input/tap?button=A")
+                    .uri("/api/sessions/session-a/input/tap?button=A")
                     .header("x-principal-token", token)
                     .body(axum::body::Body::empty())
                     .unwrap(),
@@ -442,7 +442,7 @@ mod tests {
         let response = app
             .oneshot(
                 http::Request::builder()
-                    .uri("/api/v2/sessions/session-a/memory/read8?address=0xD35E")
+                    .uri("/api/sessions/session-a/memory/read8?address=0xD35E")
                     .header("authorization", format!("Bearer {token}"))
                     .body(axum::body::Body::empty())
                     .unwrap(),
@@ -460,7 +460,7 @@ mod tests {
             .oneshot(
                 http::Request::builder()
                     .method("POST")
-                    .uri("/api/v2/sessions/session-b/input/tap?button=A")
+                    .uri("/api/sessions/session-b/input/tap?button=A")
                     .header("x-principal-token", token)
                     .body(axum::body::Body::empty())
                     .unwrap(),
@@ -472,13 +472,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_v2_control_args_are_rejected_before_socket_send() {
+    async fn invalid_control_args_are_rejected_before_socket_send() {
         let (app, commands, token) = fixture(Role::Controller, "session-a");
         let response = app
             .oneshot(
                 http::Request::builder()
                     .method("POST")
-                    .uri("/api/v2/sessions/session-a/input/tap?button=A%2Ccore.read8")
+                    .uri("/api/sessions/session-a/input/tap?button=A%2Ccore.read8")
                     .header("x-principal-token", token)
                     .body(axum::body::Body::empty())
                     .unwrap(),
@@ -490,12 +490,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_v2_memory_args_are_rejected_before_socket_send() {
+    async fn invalid_memory_args_are_rejected_before_socket_send() {
         let (app, commands, token) = fixture(Role::Controller, "session-a");
         let response = app
             .oneshot(
                 http::Request::builder()
-                    .uri("/api/v2/sessions/session-a/memory/readrange?address=0xD35E&length=1%2Ccore.read8")
+                    .uri("/api/sessions/session-a/memory/readrange?address=0xD35E&length=1%2Ccore.read8")
                     .header("x-principal-token", token)
                     .body(axum::body::Body::empty())
                     .unwrap(),

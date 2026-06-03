@@ -39,7 +39,7 @@ export class InstanceManager {
 
     try {
       const id = randomUUID()
-      const token = generateToken()
+      const principalToken = generateToken()
       const containerInfo = await this.driver.createContainer({
         image: this.config.emulatorImage,
         instanceId: id,
@@ -64,7 +64,7 @@ export class InstanceManager {
 
       const info: InstanceInfo = {
         id,
-        token,
+        principalToken,
         containerId: containerInfo.id,
         containerHost: containerInfo.host,
         captureDirectory: containerInfo.captureDirectory,
@@ -74,7 +74,7 @@ export class InstanceManager {
 
       this.instances.set(id, info)
       this.clients.set(id, client)
-      this.registry.set(token, { info, client })
+      this.registry.set(principalToken, { info, client })
 
       return info
     } finally {
@@ -101,7 +101,7 @@ export class InstanceManager {
     this.clients.get(instanceId)?.disconnect()
     this.instances.delete(instanceId)
     this.clients.delete(instanceId)
-    this.registry.delete(info.token)
+    this.registry.delete(info.principalToken)
   }
 
   list(): InstanceInfo[] {
@@ -112,8 +112,8 @@ export class InstanceManager {
     return this.instances.get(instanceId)
   }
 
-  getByToken(token: string): InstanceInfo | undefined {
-    return this.registry.get(token)?.info
+  getByPrincipalToken(principalToken: string): InstanceInfo | undefined {
+    return this.registry.get(principalToken)?.info
   }
 
   async reconstruct(): Promise<void> {
@@ -144,10 +144,10 @@ export class InstanceManager {
         continue
       }
 
-      const token = generateToken()
+      const principalToken = generateToken()
       const info: InstanceInfo = {
         id: container.instanceId,
-        token,
+        principalToken,
         containerId: container.id,
         containerHost: container.host,
         captureDirectory: container.captureDirectory,
@@ -157,7 +157,7 @@ export class InstanceManager {
 
       this.instances.set(container.instanceId, info)
       this.clients.set(container.instanceId, client)
-      this.registry.set(token, { info, client })
+      this.registry.set(principalToken, { info, client })
     }
   }
 

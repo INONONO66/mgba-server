@@ -42,7 +42,7 @@ describe("StreamProtocol", () => {
     expect(decodeStreamFrame(encoded)?.payload).toEqual(payload);
   });
 
-  it("round-trips v2 metadata sidecar without mixing it into the payload", () => {
+  it("round-trips metadata sidecar without mixing it into the payload", () => {
     const payload = Buffer.from([9, 8, 7]);
     const encoded = encodeStreamFrame({
       frameType: StreamFrameType.Delta,
@@ -69,7 +69,7 @@ describe("StreamProtocol", () => {
 
     const decoded = decodeStreamFrame(encoded);
     expect(decoded).toMatchObject({
-      version: 2,
+      format: 2,
       metadata: {
         causality: { controlEventId: "event-1", requestId: "request-1", inputLatencyMs: 20 },
         sourceCapturedAtMs: 123,

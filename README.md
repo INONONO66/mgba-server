@@ -44,19 +44,17 @@ The gateway now mounts a per-instance host capture directory into each emulator 
 
 ## API authentication contract
 
-The primary REST control/read contract is session-scoped v2 principal-token access:
+The REST control/read contract is session-scoped principal-token access only:
 
-- `GET /api/v2/sessions/:sessionId/core/currentframe`
-- `GET /api/v2/sessions/:sessionId/core/read8?address=...`
-- `POST /api/v2/sessions/:sessionId/mgba-http/button/tap?button=...`
+- `GET /api/sessions/:sessionId/core/currentframe`
+- `GET /api/sessions/:sessionId/core/read8?address=...`
+- `POST /api/sessions/:sessionId/mgba-http/button/tap?button=...`
 
-Send the session principal token with `X-Principal-Token: <token>` or `Authorization: Bearer <token>`. The token is resolved through the session ACL and must carry a grant for the requested `sessionId`.
-
-Compatibility adapters remain available for existing callers: `/api/v1/:token/...` still routes by the legacy path token, and the tokenless root route only falls back to the single registered instance for local single-instance use.
+Send the session principal token with `X-Principal-Token: <token>` or `Authorization: Bearer <token>`. The token is resolved through the session ACL and must carry a grant for the requested `sessionId`. Only session principal routes are mounted.
 
 ## Stream protocol
 
-Dashboard and per-instance WebSocket clients receive binary `pss-mgba-stream/v2` frames, not legacy JPEG image messages. The gateway captures the emulator screenshot as RGBA pixels, emits zlib-compressed keyframes, and then emits zlib-compressed tile deltas with per-instance sequence numbers. New subscribers receive the latest keyframe first; per-instance subscribers can request another keyframe with `{ "type": "keyframe" }`. Viewer/client metric deltas can be posted back with `{ "type": "client-metrics", "metrics": { ... } }` and are included in `/admin/metrics/streams`.
+Dashboard and per-instance WebSocket clients receive binary `pss-mgba-stream` frames, not JPEG image messages. The gateway captures the emulator screenshot as RGBA pixels, emits zlib-compressed keyframes, and then emits zlib-compressed tile deltas with per-instance sequence numbers. New subscribers receive the latest keyframe first; per-instance subscribers can request another keyframe with `{ "type": "keyframe" }`. Viewer/client metric deltas can be posted back with `{ "type": "client-metrics", "metrics": { ... } }` and are included in `/admin/metrics/streams`.
 
 Transport tuning is exposed with `CAPTURE_INTERVAL_MS`, `STREAM_KEYFRAME_INTERVAL`, `STREAM_TILE_SIZE`, and `WS_BACKPRESSURE_LIMIT`. The defaults target the strict 20-instance/60fps benchmark path while allowing the strict 20-instance target. See `docs/stream-protocol.md` for the wire format.
 

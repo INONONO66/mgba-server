@@ -1,14 +1,14 @@
 # Dashboard stream protocol
 
-The dashboard WebSocket transport uses binary `pss-mgba-stream/v2` frames. It is intentionally not the old JPEG-image message path: the gateway decodes each emulator screenshot into RGBA pixels, sends compressed keyframes, and then sends compressed tile deltas.
+The dashboard WebSocket transport uses binary `pss-mgba-stream` frames. It is intentionally not a JPEG-image message path: the gateway decodes each emulator screenshot into RGBA pixels, sends compressed keyframes, and then sends compressed tile deltas.
 
 ## Endpoints
 
 - `/ws/dashboard` subscribes to every instance stream and receives the latest cached keyframe for each instance immediately after connecting.
-- `/ws/instance/:token` subscribes to one instance. Unknown tokens close with code `4001`.
-- `/ws/input-log/:token` (alias: `/ws/logs/:token`) subscribes to realtime per-instance input-log JSON events.
+- `/ws/sessions/:sessionId/stream` subscribes to one authorized instance stream. Send the principal token as `Authorization: Bearer <token>` or `?principal_token=<token>`. Unknown sessions or unauthorized tokens close with code `4001`.
+- `/ws/sessions/:sessionId/input-log` subscribes to authorized realtime per-instance input-log JSON events with the same principal-token authentication.
 
-Viewers may send JSON metric controls on either endpoint. Keyframe requests are honored only on `/ws/instance/:token`, which prevents anonymous dashboard-wide recovery storms:
+Viewers may send JSON metric controls on either endpoint. Keyframe requests are honored only on the per-session stream endpoint, which prevents anonymous dashboard-wide recovery storms:
 
 ```json
 { "type": "keyframe" }
@@ -29,7 +29,7 @@ Viewers may send JSON metric controls on either endpoint. Keyframe requests are 
 }
 ```
 
-Per-instance controls are constrained to the token's instance. Metrics are exposed through `/admin/metrics/streams` for benchmark collection.
+Per-session controls are constrained to the authorized session. Metrics are exposed through `/admin/metrics/streams` for benchmark collection.
 
 ## Binary envelope
 
@@ -62,11 +62,11 @@ Delta payloads are deflate-raw compressed tile records:
 1. `u16` changed tile count.
 2. For each changed tile: `u16 x`, `u16 y`, `u16 width`, `u16 height`, followed by `width * height * 4` RGBA bytes.
 
-A delta with zero changed tiles is valid and still advances the sequence. Consumers count missing sequence numbers as stream drops. Version-1 30-byte frames remain decodable by server-side tooling for compatibility; new gateway emissions use version 2.
+A delta with zero changed tiles is valid and still advances the sequence. Consumers count missing sequence numbers as stream drops. Gateway emissions use one metadata-capable envelope.
 
 ## Metadata and input logs
 
-The v2 metadata sidecar is additive and optional. It currently carries `sourceCapturedAtMs` and, after a successful input command, a `causality` object with `controlEventId`, `requestId`, actor, button/action, input request/completion timestamps, and input latency. The causality record is attached only to the next source-captured frame, not to cached repeat deltas, so benchmark screen-reflection probes can require a strict timestamp chain.
+The metadata sidecar is additive and optional. It currently carries `sourceCapturedAtMs` and, after a successful input command, a `causality` object with `controlEventId`, `requestId`, actor, button/action, input request/completion timestamps, and input latency. The causality record is attached only to the next source-captured frame, not to cached repeat deltas, so benchmark screen-reflection probes can require a strict timestamp chain.
 
 Input-log subscribers receive text WebSocket messages shaped as:
 

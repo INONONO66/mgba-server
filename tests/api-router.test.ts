@@ -4,7 +4,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   PrincipalAccessControl,
   createApiRouter,
-  createV2ApiRouter,
   type InstanceRegistry,
 } from '../src/gateway/ApiRouter.js'
 import { MgbaSocketClient } from '../src/mgba/MgbaSocketClient.js'
@@ -61,6 +60,7 @@ vi.mock('node:fs/promises', () => ({
 
 const TOKEN = '0123456789abcdef0123456789abcdef'
 const CONTAINER_ID = 'container-123'
+const AUTH_HEADERS = { 'X-Principal-Token': TOKEN }
 
 type HttpMethod = 'GET' | 'POST'
 
@@ -87,7 +87,7 @@ describe('createApiRouter', () => {
     {
       name: 'GET /core/currentframe',
       method: 'GET',
-      path: '/api/v1/0123456789abcdef0123456789abcdef/core/currentframe',
+      path: '/api/sessions/instance-1/core/currentframe',
       socketMessage: formatMessage('core.currentFrame'),
       socketResponse: '12345',
       body: '12345',
@@ -95,7 +95,7 @@ describe('createApiRouter', () => {
     {
       name: 'GET /core/read8',
       method: 'GET',
-      path: '/api/v1/0123456789abcdef0123456789abcdef/core/read8?address=0xD35E',
+      path: '/api/sessions/instance-1/core/read8?address=0xD35E',
       socketMessage: formatMessage('core.read8', '0xD35E'),
       socketResponse: '12',
       body: '12',
@@ -103,7 +103,7 @@ describe('createApiRouter', () => {
     {
       name: 'GET /core/read16',
       method: 'GET',
-      path: '/api/v1/0123456789abcdef0123456789abcdef/core/read16?address=0xD35E',
+      path: '/api/sessions/instance-1/core/read16?address=0xD35E',
       socketMessage: formatMessage('core.read16', '0xD35E'),
       socketResponse: '3456',
       body: '3456',
@@ -111,7 +111,7 @@ describe('createApiRouter', () => {
     {
       name: 'GET /core/readrange',
       method: 'GET',
-      path: '/api/v1/0123456789abcdef0123456789abcdef/core/readrange?address=0xD35E&length=3',
+      path: '/api/sessions/instance-1/core/readrange?address=0xD35E&length=3',
       socketMessage: formatMessage('core.readRange', '0xD35E', '3'),
       socketResponse: '0a,1b,2c',
       body: '0a,1b,2c',
@@ -119,7 +119,7 @@ describe('createApiRouter', () => {
     {
       name: 'POST /mgba-http/button/tap',
       method: 'POST',
-      path: '/api/v1/0123456789abcdef0123456789abcdef/mgba-http/button/tap?button=A',
+      path: '/api/sessions/instance-1/mgba-http/button/tap?button=A',
       socketMessage: formatMessage('mgba-http.button.tap', 'A'),
       socketResponse: SUCCESS_MARKER,
       body: SUCCESS_MARKER,
@@ -127,7 +127,7 @@ describe('createApiRouter', () => {
     {
       name: 'POST /mgba-http/button/hold',
       method: 'POST',
-      path: '/api/v1/0123456789abcdef0123456789abcdef/mgba-http/button/hold?button=B&duration=15',
+      path: '/api/sessions/instance-1/mgba-http/button/hold?button=B&duration=15',
       socketMessage: formatMessage('mgba-http.button.hold', 'B', '15'),
       socketResponse: SUCCESS_MARKER,
       body: SUCCESS_MARKER,
@@ -135,7 +135,7 @@ describe('createApiRouter', () => {
     {
       name: 'POST /mgba-http/button/hold default duration',
       method: 'POST',
-      path: '/api/v1/0123456789abcdef0123456789abcdef/mgba-http/button/hold?button=Start',
+      path: '/api/sessions/instance-1/mgba-http/button/hold?button=Start',
       socketMessage: formatMessage('mgba-http.button.hold', 'Start', '15'),
       socketResponse: SUCCESS_MARKER,
       body: SUCCESS_MARKER,
@@ -143,7 +143,7 @@ describe('createApiRouter', () => {
     {
       name: 'POST /core/savestateslot',
       method: 'POST',
-      path: '/api/v1/0123456789abcdef0123456789abcdef/core/savestateslot?slot=2',
+      path: '/api/sessions/instance-1/core/savestateslot?slot=2',
       socketMessage: formatMessage('core.saveStateSlot', '2'),
       socketResponse: SUCCESS_MARKER,
       body: SUCCESS_MARKER,
@@ -151,7 +151,7 @@ describe('createApiRouter', () => {
     {
       name: 'POST /core/loadstateslot',
       method: 'POST',
-      path: '/api/v1/0123456789abcdef0123456789abcdef/core/loadstateslot?slot=2',
+      path: '/api/sessions/instance-1/core/loadstateslot?slot=2',
       socketMessage: formatMessage('core.loadStateSlot', '2'),
       socketResponse: SUCCESS_MARKER,
       body: SUCCESS_MARKER,
@@ -162,7 +162,10 @@ describe('createApiRouter', () => {
     it(`${endpoint.name} sends the Lua command and returns mGBA-http text`, async () => {
       const fixture = createFixture(new Map([[endpoint.socketMessage, endpoint.socketResponse]]))
 
-      const response = await fixture.app.request(endpoint.path, { method: endpoint.method })
+      const response = await fixture.app.request(endpoint.path, {
+        method: endpoint.method,
+        headers: AUTH_HEADERS,
+      })
 
       expect(response.status).toBe(200)
       expect(response.headers.get('content-type')).toContain('text/plain')
@@ -171,45 +174,36 @@ describe('createApiRouter', () => {
     })
   }
 
-  it('returns 401 for an unknown token before route parameters are read', async () => {
+  it('returns 401 for missing or unknown principal tokens before socket send', async () => {
     const fixture = createFixture(new Map([[formatMessage('core.read8', '0xD35E'), '12']]))
 
-    const response = await fixture.app.request('/api/v1/deadbeefdeadbeefdeadbeefdeadbeef/core/read8')
+    const missing = await fixture.app.request('/api/sessions/instance-1/core/read8?address=0xD35E')
+    const unknown = await fixture.app.request('/api/sessions/instance-1/core/read8?address=0xD35E', {
+      headers: { 'X-Principal-Token': 'deadbeef' },
+    })
 
-    expect(response.status).toBe(401)
-    expect(await response.text()).toBe('Unauthorized')
+    expect(missing.status).toBe(401)
+    expect(unknown.status).toBe(401)
     expect(fixture.messages).toEqual([])
   })
 
-  it('can route tokenless root requests to the only registered instance when enabled', async () => {
+  it('does not mount path principal-token or tokenless root routes', async () => {
     const socketMessage = formatMessage('core.currentFrame')
-    const fixture = createFixture(new Map([[socketMessage, '12345']]), { fallbackToSingleInstance: true })
+    const fixture = createFixture(new Map([[socketMessage, '12345']]))
 
-    const response = await fixture.app.request('/core/currentframe')
+    const pathToken = await fixture.app.request(`/api/tokens/${TOKEN}/core/currentframe`)
+    const root = await fixture.app.request('/core/currentframe', { headers: AUTH_HEADERS })
 
-    expect(response.status).toBe(200)
-    expect(await response.text()).toBe('12345')
-    expect(fixture.messages).toEqual([socketMessage])
+    expect(pathToken.status).toBe(404)
+    expect(root.status).toBe(404)
+    expect(fixture.messages).toEqual([])
   })
 
-  it('routes v2 session requests with the principal token header as the primary contract', async () => {
+  it('accepts bearer principal tokens on default session requests', async () => {
     const socketMessage = formatMessage('core.currentFrame')
-    const fixture = createFixture(new Map([[socketMessage, '12345']]), { includeV2: true })
+    const fixture = createFixture(new Map([[socketMessage, '12345']]))
 
-    const response = await fixture.app.request('/api/v2/sessions/instance-1/core/currentframe', {
-      headers: { 'X-Principal-Token': TOKEN },
-    })
-
-    expect(response.status).toBe(200)
-    expect(await response.text()).toBe('12345')
-    expect(fixture.messages).toEqual([socketMessage])
-  })
-
-  it('accepts bearer principal tokens on v2 session requests', async () => {
-    const socketMessage = formatMessage('core.currentFrame')
-    const fixture = createFixture(new Map([[socketMessage, '12345']]), { includeV2: true })
-
-    const response = await fixture.app.request('/api/v2/sessions/instance-1/core/currentframe', {
+    const response = await fixture.app.request('/api/sessions/instance-1/core/currentframe', {
       headers: { Authorization: `Bearer ${TOKEN}` },
     })
 
@@ -218,12 +212,12 @@ describe('createApiRouter', () => {
     expect(fixture.messages).toEqual([socketMessage])
   })
 
-  it('keeps v2 principal tokens scoped to the requested session', async () => {
+  it('keeps principal tokens scoped to the requested session', async () => {
     const socketMessage = formatMessage('core.currentFrame')
-    const fixture = createFixture(new Map([[socketMessage, '12345']]), { includeV2: true })
+    const fixture = createFixture(new Map([[socketMessage, '12345']]))
 
-    const response = await fixture.app.request('/api/v2/sessions/other-instance/core/currentframe', {
-      headers: { 'X-Principal-Token': TOKEN },
+    const response = await fixture.app.request('/api/sessions/other-instance/core/currentframe', {
+      headers: AUTH_HEADERS,
     })
 
     expect(response.status).toBe(401)
@@ -231,28 +225,12 @@ describe('createApiRouter', () => {
     expect(fixture.messages).toEqual([])
   })
 
-  it('keeps legacy path token routing as a compatibility adapter', async () => {
-    const socketMessage = formatMessage('core.currentFrame')
-    const fixture = createFixture(new Map([[socketMessage, '12345']]), { includeV2: true })
-
-    const response = await fixture.app.request(
-      '/api/v1/0123456789abcdef0123456789abcdef/core/currentframe',
-    )
-
-    expect(response.status).toBe(200)
-    expect(await response.text()).toBe('12345')
-    expect(fixture.messages).toEqual([socketMessage])
-  })
-
-  it('logs v2 input actors by principal id without leaking bearer tokens', async () => {
+  it('logs input actors by principal id without leaking bearer tokens', async () => {
     const inputLog = new InputLogBus()
     const socketMessage = formatMessage('mgba-http.button.tap', 'A')
-    const fixture = createFixture(new Map([[socketMessage, SUCCESS_MARKER]]), {
-      includeV2: true,
-      inputLog,
-    })
+    const fixture = createFixture(new Map([[socketMessage, SUCCESS_MARKER]]), { inputLog })
 
-    const response = await fixture.app.request('/api/v2/sessions/instance-1/mgba-http/button/tap?button=A', {
+    const response = await fixture.app.request('/api/sessions/instance-1/mgba-http/button/tap?button=A', {
       method: 'POST',
       headers: { Authorization: `Bearer ${TOKEN}` },
     })
@@ -267,36 +245,30 @@ describe('createApiRouter', () => {
     expect(JSON.stringify(events)).not.toContain(TOKEN)
   })
 
-  it('enforces v2 grants before sending memory or key commands', async () => {
+  it('enforces grants before sending memory or key commands', async () => {
     const acl = new PrincipalAccessControl()
     acl.registerPrincipalToken('viewer-a', TOKEN)
     acl.grant('viewer-a', 'instance-1', 'viewer')
     const socketMessage = formatMessage('core.read8', '0xD35E')
-    const fixture = createFixture(new Map([[socketMessage, '12']]), {
-      includeV2: true,
-      principalAcl: acl,
-    })
+    const fixture = createFixture(new Map([[socketMessage, '12']]), { principalAcl: acl })
 
-    const response = await fixture.app.request('/api/v2/sessions/instance-1/core/read8?address=0xD35E', {
-      headers: { 'X-Principal-Token': TOKEN },
+    const response = await fixture.app.request('/api/sessions/instance-1/core/read8?address=0xD35E', {
+      headers: AUTH_HEADERS,
     })
 
     expect(response.status).toBe(401)
     expect(fixture.messages).toEqual([])
   })
 
-  it('does not let v2 viewer grants mutate save-state slots', async () => {
+  it('does not let viewer grants mutate save-state slots', async () => {
     const acl = new PrincipalAccessControl()
     acl.registerPrincipalToken('viewer-a', TOKEN)
     acl.grant('viewer-a', 'instance-1', 'viewer')
-    const fixture = createFixture(new Map([[formatMessage('core.saveStateSlot', '2'), SUCCESS_MARKER]]), {
-      includeV2: true,
-      principalAcl: acl,
-    })
+    const fixture = createFixture(new Map([[formatMessage('core.saveStateSlot', '2'), SUCCESS_MARKER]]), { principalAcl: acl })
 
-    const response = await fixture.app.request('/api/v2/sessions/instance-1/core/savestateslot?slot=2', {
+    const response = await fixture.app.request('/api/sessions/instance-1/core/savestateslot?slot=2', {
       method: 'POST',
-      headers: { 'X-Principal-Token': TOKEN },
+      headers: AUTH_HEADERS,
     })
 
     expect(response.status).toBe(401)
@@ -304,19 +276,19 @@ describe('createApiRouter', () => {
   })
 
   it('rejects protocol delimiter injection in query arguments before socket send', async () => {
-    const fixture = createFixture(new Map(), { includeV2: true })
+    const fixture = createFixture(new Map())
 
     const badButton = await fixture.app.request(
-      '/api/v2/sessions/instance-1/mgba-http/button/tap?button=A%2Ccore.read8',
-      { method: 'POST', headers: { 'X-Principal-Token': TOKEN } },
+      '/api/sessions/instance-1/mgba-http/button/tap?button=A%2Ccore.read8',
+      { method: 'POST', headers: AUTH_HEADERS },
     )
     const badAddress = await fixture.app.request(
-      '/api/v2/sessions/instance-1/core/read8?address=0xD35E%3C%7CEND%7C%3E',
-      { headers: { 'X-Principal-Token': TOKEN } },
+      '/api/sessions/instance-1/core/read8?address=0xD35E%3C%7CEND%7C%3E',
+      { headers: AUTH_HEADERS },
     )
     const badSlot = await fixture.app.request(
-      '/api/v1/0123456789abcdef0123456789abcdef/core/savestateslot?slot=1%2Ccore.read8',
-      { method: 'POST' },
+      '/api/sessions/instance-1/core/savestateslot?slot=1%2Ccore.read8',
+      { method: 'POST', headers: AUTH_HEADERS },
     )
 
     expect(badButton.status).toBe(400)
@@ -333,8 +305,8 @@ describe('createApiRouter', () => {
     const fixture = createFixture(new Map([[socketMessage, SUCCESS_MARKER]]))
 
     const response = await fixture.app.request(
-      '/api/v1/0123456789abcdef0123456789abcdef/core/screenshot',
-      { method: 'POST' },
+      '/api/sessions/instance-1/core/screenshot',
+      { method: 'POST', headers: AUTH_HEADERS },
     )
 
     expect(response.status).toBe(200)
@@ -355,8 +327,8 @@ describe('createApiRouter', () => {
     const fixture = createFixture(new Map([[socketMessage, SUCCESS_MARKER]]))
 
     const response = await fixture.app.request(
-      '/api/v1/0123456789abcdef0123456789abcdef/core/screenshot',
-      { method: 'POST' },
+      '/api/sessions/instance-1/core/screenshot',
+      { method: 'POST', headers: AUTH_HEADERS },
     )
 
     expect(response.status).toBe(500)
@@ -368,8 +340,6 @@ describe('createApiRouter', () => {
 function createFixture(
   responses: Map<string, string>,
   options: {
-    readonly fallbackToSingleInstance?: boolean
-    readonly includeV2?: boolean
     readonly inputLog?: InputLogBus
     readonly principalAcl?: PrincipalAccessControl
   } = {},
@@ -393,7 +363,7 @@ function createFixture(
       {
         info: {
           id: 'instance-1',
-          token: TOKEN,
+          principalToken: TOKEN,
           containerId: CONTAINER_ID,
           containerHost: '127.0.0.1',
           captureDirectory: '/tmp/grokemon-captures-test/instance-1',
@@ -406,16 +376,10 @@ function createFixture(
   ])
 
   const app = new Hono()
-  if (options.includeV2) {
-    app.route('/api/v2/sessions/:sessionId', createV2ApiRouter(registry, {
-      inputLog: options.inputLog,
-      principalAcl: options.principalAcl,
-    }))
-  }
-  app.route('/api/v1/:token', createApiRouter(registry, { inputLog: options.inputLog }))
-  if (options.fallbackToSingleInstance) {
-    app.route('/', createApiRouter(registry, { fallbackToSingleInstance: true }))
-  }
+  app.route('/api/sessions/:sessionId', createApiRouter(registry, {
+    inputLog: options.inputLog,
+    principalAcl: options.principalAcl,
+  }))
 
   return { app, messages }
 }

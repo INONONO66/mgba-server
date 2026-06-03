@@ -9,7 +9,7 @@ import type { MgbaSocketClient } from '../mgba/MgbaSocketClient.js'
 import { formatMessage, SUCCESS_MARKER } from '../mgba/protocol.js'
 import { type InputAction, type InputLogBus } from '../streaming/InputLog.js'
 
-interface InstanceEntry {
+export interface InstanceEntry {
   info: InstanceInfo
   client: MgbaSocketClient
 }
@@ -30,7 +30,7 @@ const HOST_CAPTURE_FILE = 'rest-capture.png'
 const TERMINATION_MARKER = '<|END|>'
 const VALID_BUTTONS = new Set(['A', 'B', 'L', 'R', 'Start', 'Select', 'Up', 'Down', 'Left', 'Right'])
 
-type PrincipalPermission = 'view-stream' | 'view-input-logs' | 'send-key' | 'read-memory' | 'admin-lifecycle'
+export type PrincipalPermission = 'view-stream' | 'view-input-logs' | 'send-key' | 'read-memory' | 'admin-lifecycle'
 type PrincipalRole = 'owner' | 'viewer' | 'controller' | 'admin'
 
 interface PrincipalGrant {
@@ -65,29 +65,24 @@ export class PrincipalAccessControl {
   }
 }
 
-interface ApiRouterOptions {
-  authMode?: 'legacy-path-token' | 'principal-token'
-  fallbackToSingleInstance?: boolean
+export interface ApiRouterOptions {
   inputLog?: InputLogBus
-  onInputCompleted?: (token: string) => void
+  onInputCompleted?: (principalToken: string) => void
   principalAcl?: PrincipalAccessControl
 }
 
 export function createApiRouter(registry: InstanceRegistry, options: ApiRouterOptions = {}): Hono<ApiEnv> {
   const app = new Hono<ApiEnv>()
-  const authMode = options.authMode ?? 'legacy-path-token'
 
   app.use('*', async (c, next) => {
-    const auth = authMode === 'principal-token'
-      ? resolvePrincipalTokenEntry(
-        registry,
-        c.req.param('sessionId'),
-        c.req.header('X-Principal-Token'),
-        c.req.header('Authorization'),
-        routePermission(c.req.path),
-        options.principalAcl,
-      )
-      : resolveLegacyEntry(registry, c.req.param('token'), options.fallbackToSingleInstance)
+    const auth = resolvePrincipalTokenEntry(
+      registry,
+      c.req.param('sessionId'),
+      c.req.header('X-Principal-Token'),
+      c.req.header('Authorization'),
+      routePermission(c.req.path),
+      options.principalAcl,
+    )
     if (auth === undefined) {
       return c.text('Unauthorized', 401)
     }
@@ -191,22 +186,7 @@ export function createApiRouter(registry: InstanceRegistry, options: ApiRouterOp
   return app
 }
 
-export function createV2ApiRouter(registry: InstanceRegistry, options: Omit<ApiRouterOptions, 'authMode' | 'fallbackToSingleInstance'> = {}): Hono<ApiEnv> {
-  return createApiRouter(registry, { ...options, authMode: 'principal-token' })
-}
-
-function resolveLegacyEntry(
-  registry: InstanceRegistry,
-  token: string | undefined,
-  fallbackToSingleInstance: boolean | undefined,
-): { entry: InstanceEntry; principalId: string } | undefined {
-  const entry = token === undefined && fallbackToSingleInstance && registry.size === 1
-    ? Array.from(registry.values())[0]
-    : token === undefined ? undefined : registry.get(token)
-  return entry === undefined ? undefined : { entry, principalId: `legacy:${entry.info.id}` }
-}
-
-function resolvePrincipalTokenEntry(
+export function resolvePrincipalTokenEntry(
   registry: InstanceRegistry,
   sessionId: string | undefined,
   principalTokenHeader: string | undefined,
@@ -233,7 +213,7 @@ function resolvePrincipalTokenEntry(
   return principalId === undefined ? undefined : { entry, principalId }
 }
 
-function bearerToken(value: string | undefined): string | undefined {
+export function bearerToken(value: string | undefined): string | undefined {
   const [scheme, token, extra] = value?.split(' ') ?? []
   if (extra !== undefined || scheme?.toLowerCase() !== 'bearer' || token === undefined) {
     return undefined
@@ -271,7 +251,7 @@ async function sendInput(
     if (inputEvent) {
       if (response === SUCCESS_MARKER) {
         options.inputLog?.completeInput(inputEvent.eventId)
-        options.onInputCompleted?.(entry.info.token)
+        options.onInputCompleted?.(entry.info.principalToken)
       } else {
         options.inputLog?.failInput(inputEvent.eventId, response)
       }
@@ -373,11 +353,11 @@ function routePermission(path: string): PrincipalPermission {
   return 'admin-lifecycle'
 }
 
-function defaultPrincipalAcl(registry: InstanceRegistry): PrincipalAccessControl {
+export function defaultPrincipalAcl(registry: InstanceRegistry): PrincipalAccessControl {
   const acl = new PrincipalAccessControl()
   for (const entry of registry.values()) {
     const principalId = `session:${entry.info.id}`
-    acl.registerPrincipalToken(principalId, entry.info.token)
+    acl.registerPrincipalToken(principalId, entry.info.principalToken)
     acl.grant(principalId, entry.info.id, 'owner')
   }
 

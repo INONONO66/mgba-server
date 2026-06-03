@@ -15,8 +15,8 @@ import { InputLogBus } from "../src/streaming/InputLog.js";
 import { decodeStreamFrame, StreamFrameType } from "../src/streaming/StreamProtocol.js";
 
 const HOST = "127.0.0.1";
-const TOKEN_A = "token-a";
-const TOKEN_B = "token-b";
+const PRINCIPAL_TOKEN_A = "token-a";
+const PRINCIPAL_TOKEN_B = "token-b";
 
 describe("DashboardBroadcast", () => {
   const fixtures: BroadcastFixture[] = [];
@@ -74,16 +74,16 @@ describe("DashboardBroadcast", () => {
     await closeClient(client);
   });
 
-  it("routes per-instance frames only to matching token subscribers", async () => {
+  it("routes per-instance frames only to matching principal-token subscribers", async () => {
     const fixture = await createFixture();
     fixtures.push(fixture);
-    const clientA = await fixture.connect(`/ws/instance/${TOKEN_A}`);
-    const clientB = await fixture.connect(`/ws/instance/${TOKEN_B}`);
+    const clientA = await fixture.connect(streamPath("instance-a", PRINCIPAL_TOKEN_A));
+    const clientB = await fixture.connect(streamPath("instance-b", PRINCIPAL_TOKEN_B));
 
     const messageA = nextMessage(clientA);
     const messageB = nextMessage(clientB, 30);
     const frame = createFrame({
-      token: TOKEN_A,
+      principalToken: PRINCIPAL_TOKEN_A,
       instanceId: "instance-a",
       timestampMs: 9,
     });
@@ -93,10 +93,10 @@ describe("DashboardBroadcast", () => {
     await expect(messageB).resolves.toBeUndefined();
   });
 
-  it("closes malformed instance tokens without throwing", async () => {
+  it("closes malformed session paths without throwing", async () => {
     const fixture = await createFixture();
     fixtures.push(fixture);
-    const client = new WebSocket(fixture.url("/ws/instance/%"));
+    const client = new WebSocket(fixture.url("/ws/sessions/%/stream?principal_token=token-a"));
 
     await expect(closeCode(client)).resolves.toBe(4000);
   });
@@ -105,7 +105,7 @@ describe("DashboardBroadcast", () => {
     const fixture = await createFixture(8, vi.fn());
     fixtures.push(fixture);
     const serverSocketPromise = fixture.nextServerSocket();
-    const client = await fixture.connect(`/ws/instance/${TOKEN_A}`);
+    const client = await fixture.connect(streamPath("instance-a", PRINCIPAL_TOKEN_A));
     const serverSocket = await serverSocketPromise;
     Object.defineProperty(serverSocket, "bufferedAmount", { value: 9, configurable: true });
 
@@ -135,10 +135,10 @@ describe("DashboardBroadcast", () => {
     const cached = createFrame({ sequence: 1 });
     fixture.broadcast.broadcastFrame(cached);
 
-    const client = await fixture.connect(`/ws/instance/${TOKEN_A}`);
+    const client = await fixture.connect(streamPath("instance-a", PRINCIPAL_TOKEN_A));
 
     await expect(nextMessage(client, 30)).resolves.toBeUndefined();
-    expect(requestKeyframe).toHaveBeenCalledWith(TOKEN_A);
+    expect(requestKeyframe).toHaveBeenCalledWith(PRINCIPAL_TOKEN_A);
 
     const delta = createFrame({ frameType: StreamFrameType.Delta, sequence: 2 });
     fixture.broadcast.broadcastFrame(delta);
@@ -150,7 +150,7 @@ describe("DashboardBroadcast", () => {
     const fixture = await createFixture(262_144, requestKeyframe);
     fixtures.push(fixture);
     fixture.broadcast.broadcastFrame(createFrame());
-    const client = await fixture.connect(`/ws/instance/${TOKEN_A}`);
+    const client = await fixture.connect(streamPath("instance-a", PRINCIPAL_TOKEN_A));
     await nextMessage(client);
     requestKeyframe.mockClear();
 
@@ -163,7 +163,7 @@ describe("DashboardBroadcast", () => {
     const inputLog = new InputLogBus();
     const fixture = await createFixture(262_144, undefined, inputLog);
     fixtures.push(fixture);
-    const client = await fixture.connect(`/ws/input-log/${TOKEN_A}`);
+    const client = await fixture.connect(inputLogPath("instance-a", PRINCIPAL_TOKEN_A));
 
     const message = nextMessage(client);
     const event = inputLog.beginInput({
@@ -186,12 +186,12 @@ describe("DashboardBroadcast", () => {
     const fixture = await createFixture(262_144, requestKeyframe);
     fixtures.push(fixture);
     fixture.broadcast.broadcastFrame(createFrame());
-    const client = await fixture.connect(`/ws/instance/${TOKEN_A}`);
+    const client = await fixture.connect(streamPath("instance-a", PRINCIPAL_TOKEN_A));
     await nextMessage(client);
     requestKeyframe.mockClear();
 
     client.send(JSON.stringify({ type: "keyframe" }));
-    await vi.waitFor(() => expect(requestKeyframe).toHaveBeenCalledWith(TOKEN_A));
+    await vi.waitFor(() => expect(requestKeyframe).toHaveBeenCalledWith(PRINCIPAL_TOKEN_A));
   });
 });
 
@@ -205,7 +205,7 @@ interface BroadcastFixture {
 
 async function createFixture(
   backpressureLimit = 262_144,
-  requestKeyframe?: (token?: string) => void,
+  requestKeyframe?: (principalToken?: string) => void,
   inputLog?: InputLogBus
 ): Promise<BroadcastFixture> {
   const httpServer = createServer();
@@ -242,16 +242,16 @@ async function createFixture(
 
 function createRegistry(): InstanceRegistry {
   return new Map([
-    [TOKEN_A, createRegistryEntry(TOKEN_A, "instance-a")],
-    [TOKEN_B, createRegistryEntry(TOKEN_B, "instance-b")],
+    [PRINCIPAL_TOKEN_A, createRegistryEntry(PRINCIPAL_TOKEN_A, "instance-a")],
+    [PRINCIPAL_TOKEN_B, createRegistryEntry(PRINCIPAL_TOKEN_B, "instance-b")],
   ]);
 }
 
-function createRegistryEntry(token: string, id: string) {
+function createRegistryEntry(principalToken: string, id: string) {
   return {
     info: {
       id,
-      token,
+      principalToken,
       containerId: `container-${id}`,
       containerHost: "127.0.0.1",
       captureDirectory: `/tmp/grokemon-captures-test/${id}`,
@@ -276,7 +276,7 @@ function createFrame(overrides: Partial<CapturedFrame> = {}): CapturedFrame {
     sourceCapturedAtMs: 123,
     tileSize: 16,
     timestampMs: 123,
-    token: TOKEN_A,
+    principalToken: PRINCIPAL_TOKEN_A,
     width: 240,
     ...overrides,
   };
@@ -393,4 +393,12 @@ function closeCode(client: WebSocket): Promise<number> {
       resolve(code);
     });
   });
+}
+
+function streamPath(sessionId: string, principalToken: string): string {
+  return `/ws/sessions/${encodeURIComponent(sessionId)}/stream?principal_token=${encodeURIComponent(principalToken)}`;
+}
+
+function inputLogPath(sessionId: string, principalToken: string): string {
+  return `/ws/sessions/${encodeURIComponent(sessionId)}/input-log?principal_token=${encodeURIComponent(principalToken)}`;
 }
