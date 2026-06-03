@@ -16,3 +16,4 @@ futures = { workspace = true }
 image = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
+openh264 = { version = "0.6", features = ["source"] }

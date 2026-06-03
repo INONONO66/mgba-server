@@ -2,6 +2,7 @@
 
 pub mod broadcast;
 pub mod frame_hub;
+pub mod h264;
 pub mod input_log;
 pub mod protocol;
 

@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running unittests src/lib.rs (target/debug/deps/grokemon_streaming-acca2ce36141d4b0)
+
+running 3 tests
+test h264::tests::yuv420_conversion_correct_dimensions ... ok
+test h264::tests::encode_produces_nal_units ... ok
+test h264::tests::encode_latency_under_5ms ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.01s
+
