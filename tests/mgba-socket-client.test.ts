@@ -182,6 +182,34 @@ describe('MgbaSocketClient', () => {
     expect(received).toEqual(['first', 'second'])
   })
 
+  it('retries one in-flight request after a transient socket close', async () => {
+    let commandAttempts = 0
+    let connectionCount = 0
+    const { port } = await createMockServer((message, socket) => {
+      if (message === 'core.read8,0') {
+        commandAttempts += 1
+        if (commandAttempts === 1) {
+          socket.destroy()
+          return
+        }
+
+        socket.write(`42${TERMINATION_MARKER}`)
+      }
+    })
+
+    servers[0].on('connection', () => {
+      connectionCount += 1
+    })
+
+    const client = new MgbaSocketClient()
+    clients.push(client)
+    await client.connect(HOST, port)
+
+    await expect(client.send(formatMessage('core.read8', '0'))).resolves.toBe('42')
+    expect(commandAttempts).toBe(2)
+    expect(connectionCount).toBe(2)
+  })
+
   it('reconnects on the next send after the socket disconnects', async () => {
     let connectionCount = 0
     const { port } = await createMockServer((message, socket) => {

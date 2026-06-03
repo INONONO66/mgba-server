@@ -28,7 +28,7 @@ export class MgbaSocketClient {
   }
 
   send(message: string): Promise<string> {
-    const response = this.queue.then(() => this.sendOnce(message))
+    const response = this.queue.then(() => this.sendWithReconnectRetry(message))
     this.queue = response.then(
       () => undefined,
       () => undefined,
@@ -53,6 +53,19 @@ export class MgbaSocketClient {
   async ping(): Promise<boolean> {
     const response = await this.send(formatMessage('core.currentFrame'))
     return response.trim() !== '' && Number.isFinite(Number(response))
+  }
+
+  private async sendWithReconnectRetry(message: string): Promise<string> {
+    try {
+      return await this.sendOnce(message)
+    } catch (error) {
+      if (!isReconnectableSocketError(error)) {
+        throw error
+      }
+
+      this.disconnectForReconnect()
+      return this.sendOnce(message)
+    }
   }
 
   private async sendOnce(message: string): Promise<string> {
@@ -207,4 +220,22 @@ export class MgbaSocketClient {
     this.buffer = ''
     this.responseBacklog = []
   }
+}
+
+function isReconnectableSocketError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false
+  }
+
+  const code = typeof (error as NodeJS.ErrnoException).code === 'string'
+    ? (error as NodeJS.ErrnoException).code
+    : undefined
+  if (code !== undefined && ['ECONNRESET', 'EPIPE', 'ETIMEDOUT'].includes(code)) {
+    return true
+  }
+
+  const message = error.message.toLowerCase()
+  return message.includes('mgba socket closed') ||
+    message.includes('mgba socket disconnected') ||
+    message.includes('mgba socket reconnecting')
 }
