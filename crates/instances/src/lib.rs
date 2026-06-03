@@ -8,7 +8,10 @@ use std::{
     time::Duration,
 };
 use thiserror::Error;
-use tokio::sync::{Mutex, RwLock};
+use tokio::{
+    process::{Child, Command},
+    sync::{Mutex, RwLock},
+};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +65,8 @@ pub enum InstanceError {
     Docker(String),
     #[error("instance not found")]
     NotFound,
+    #[error("process error: {0}")]
+    Process(String),
 }
 
 #[async_trait]
@@ -198,6 +203,161 @@ impl InstanceBackend for DockerCliDriver {
     }
 }
 
+struct ManagedChild {
+    child: Child,
+    socket_path: String,
+}
+
+pub struct ProcessBackend {
+    worker_binary_path: String,
+    worker_socket_dir: String,
+    shutdown_timeout_ms: u64,
+    children: Arc<RwLock<HashMap<String, ManagedChild>>>,
+}
+
+impl ProcessBackend {
+    pub fn new(config: &GatewayConfig) -> Self {
+        Self {
+            worker_binary_path: config.worker_binary_path.clone(),
+            worker_socket_dir: config.worker_socket_dir.clone(),
+            shutdown_timeout_ms: config.worker_shutdown_timeout_ms,
+            children: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+}
+
+#[async_trait]
+impl InstanceBackend for ProcessBackend {
+    async fn create_instance(
+        &self,
+        opts: CreateInstanceOptions,
+    ) -> Result<WorkerInfo, InstanceError> {
+        tokio::fs::create_dir_all(&self.worker_socket_dir)
+            .await
+            .map_err(|error| InstanceError::Process(error.to_string()))?;
+
+        let mut cmd = Command::new(&self.worker_binary_path);
+        cmd.arg("--socket")
+            .arg(&opts.socket_path)
+            .arg("--core")
+            .arg(&opts.core_path);
+        if let Some(rom) = &opts.rom_path {
+            cmd.arg("--rom").arg(rom);
+        }
+        cmd.stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+
+        // SAFETY: pre_exec runs in the child after fork, before exec. The closure only
+        // calls prctl, which is async-signal-safe and has no side effects on the parent.
+        #[cfg(target_os = "linux")]
+        unsafe {
+            cmd.pre_exec(|| {
+                // SAFETY: prctl is async-signal-safe and only affects the child process.
+                unsafe {
+                    libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                }
+                Ok(())
+            });
+        }
+
+        let child = cmd
+            .spawn()
+            .map_err(|error| InstanceError::Process(error.to_string()))?;
+
+        let pid = child.id().unwrap_or(0);
+
+        let socket_path = opts.socket_path.clone();
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+        loop {
+            if tokio::fs::metadata(&socket_path).await.is_ok() {
+                break;
+            }
+            if tokio::time::Instant::now() > deadline {
+                return Err(InstanceError::Process(
+                    "worker socket did not appear within 10s".to_string(),
+                ));
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+
+        self.children.write().await.insert(
+            opts.instance_id.clone(),
+            ManagedChild {
+                child,
+                socket_path: opts.socket_path.clone(),
+            },
+        );
+
+        Ok(WorkerInfo {
+            pid,
+            socket_path: opts.socket_path,
+        })
+    }
+
+    async fn stop_instance(&self, instance_id: &str) -> Result<(), InstanceError> {
+        let entry = {
+            let mut children = self.children.write().await;
+            children.remove(instance_id)
+        };
+
+        if let Some(ManagedChild {
+            mut child,
+            socket_path,
+        }) = entry
+        {
+            let pid = child.id().unwrap_or(0);
+
+            #[cfg(unix)]
+            if pid > 0 {
+                // SAFETY: kill() is safe with a valid PID and signal number; SIGTERM
+                // simply requests graceful termination.
+                unsafe {
+                    libc::kill(pid as libc::pid_t, libc::SIGTERM);
+                }
+            }
+
+            let timeout = tokio::time::Duration::from_millis(self.shutdown_timeout_ms);
+            match tokio::time::timeout(timeout, child.wait()).await {
+                Ok(_) => {}
+                Err(_) => {
+                    #[cfg(unix)]
+                    if pid > 0 {
+                        // SAFETY: kill() is safe with a valid PID and SIGKILL.
+                        unsafe {
+                            libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                        }
+                    }
+                    let _ = child.wait().await;
+                }
+            }
+
+            let _ = tokio::fs::remove_file(&socket_path).await;
+        }
+        Ok(())
+    }
+
+    async fn list_managed_instances(&self) -> Result<Vec<ManagedInstanceInfo>, InstanceError> {
+        let children = self.children.read().await;
+        Ok(children
+            .iter()
+            .map(|(id, managed)| ManagedInstanceInfo {
+                instance_id: id.clone(),
+                pid: managed.child.id().unwrap_or(0),
+                socket_path: managed.socket_path.clone(),
+            })
+            .collect())
+    }
+
+    async fn inspect_running(&self, instance_id: &str) -> Result<bool, InstanceError> {
+        let children = self.children.read().await;
+        if let Some(managed) = children.get(instance_id) {
+            Ok(managed.child.id().is_some())
+        } else {
+            Ok(false)
+        }
+    }
+}
+
 pub async fn health_check_interval() -> Duration {
     Duration::from_secs(10)
 }
@@ -321,5 +481,45 @@ mod tests {
             InstanceError::Docker("stop failed".to_string())
         );
         assert!(manager.get(&info.id).await.is_some());
+    }
+
+    mod process_tests {
+        use super::*;
+
+        #[tokio::test]
+        async fn process_backend_spawn_and_kill() {
+            // Without a real worker that creates a socket, we cannot exercise the full
+            // create_instance() lifecycle. Verify that ProcessBackend::new wires the
+            // configured worker binary path, socket dir, and shutdown timeout.
+            let config = GatewayConfig {
+                worker_binary_path: "sleep".to_string(),
+                worker_socket_dir: "/tmp/test-mgba-workers".to_string(),
+                worker_shutdown_timeout_ms: 1000,
+                ..GatewayConfig::default()
+            };
+            let backend = ProcessBackend::new(&config);
+            assert_eq!(backend.worker_binary_path, "sleep");
+            assert_eq!(backend.worker_socket_dir, "/tmp/test-mgba-workers");
+            assert_eq!(backend.shutdown_timeout_ms, 1000);
+            assert!(backend.children.read().await.is_empty());
+        }
+
+        #[tokio::test]
+        async fn max_instances_enforced() {
+            let backend = Arc::new(FakeBackend::default());
+            let manager = InstanceManager::new(
+                GatewayConfig {
+                    max_instances: 2,
+                    libretro_core_path: "/tmp/core.so".to_string(),
+                    worker_socket_dir: "/tmp/grokemon-workers".to_string(),
+                    ..GatewayConfig::default()
+                },
+                backend,
+            );
+            manager.create("session-1").await.unwrap();
+            manager.create("session-2").await.unwrap();
+            let err = manager.create("session-3").await.unwrap_err();
+            assert_eq!(err, InstanceError::MaxInstancesReached);
+        }
     }
 }

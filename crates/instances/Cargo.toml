@@ -9,6 +9,7 @@ async-trait.workspace = true
 chrono.workspace = true
 grokemon-config = { path = "../config" }
 grokemon-mgba = { path = "../mgba" }
+libc.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
