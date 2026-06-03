@@ -1,0 +1,25 @@
+   Compiling libloading v0.8.9
+   Compiling grokemon-libretro v0.1.0 (/Users/ino/Develop/mgba-server/crates/libretro)
+error[E0382]: borrow of moved value: `lib`
+   --> crates/libretro/src/lib.rs:110:21
+    |
+103 |           let lib = unsafe { libloading::Library::new(path)? };
+    |               --- move occurs because `lib` has type `libloading::Library`, which does not implement the `Copy` trait
+...
+110 |                       lib.get($name)
+    |                       ^^^ value borrowed here after move
+...
+118 |               _lib: lib,
+    |                     --- value moved here
+119 |               retro_api_version: sym!(
+    |  ________________________________-
+120 | |                 b"retro_api_version\0",
+121 | |                 "retro_api_version",
+122 | |                 unsafe extern "C" fn() -> u32
+123 | |             ),
+    | |_____________- in this macro invocation
+    |
+    = note: this error originates in the macro `sym` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+For more information about this error, try `rustc --explain E0382`.
+error: could not compile `grokemon-libretro` (lib) due to 1 previous error
