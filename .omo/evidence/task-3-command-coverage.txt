@@ -1,0 +1,2 @@
+WorkerCommand variants: Ping, LoadRom, SetInputState, ReadMemory, WriteMemory, SaveState, LoadState, Reset, Shutdown, GetCurrentFrame, ButtonTap, ButtonHold, TakeScreenshot
+Lua equivalents: button.tap->ButtonTap, button.hold->ButtonHold, core.read8/16/readRange->ReadMemory, core.write8->WriteMemory, core.screenshot->TakeScreenshot, core.saveStateSlot->SaveState, core.loadStateSlot->LoadState, core.currentFrame->GetCurrentFrame, restart->Reset
