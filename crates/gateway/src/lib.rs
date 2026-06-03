@@ -415,28 +415,26 @@ async fn handle_input_log_ws(
 ) {
     let recent = input_log.recent(&session_id).await;
     for event in recent {
-        if let Ok(json) = serde_json::to_string(&event) {
-            if socket
+        if let Ok(json) = serde_json::to_string(&event)
+            && socket
                 .send(axum::extract::ws::Message::Text(json.into()))
                 .await
                 .is_err()
-            {
-                return;
-            }
+        {
+            return;
         }
     }
     let mut rx = input_log.subscribe(&session_id).await;
     loop {
         match rx.recv().await {
             Ok(event) => {
-                if let Ok(json) = serde_json::to_string(&event) {
-                    if socket
+                if let Ok(json) = serde_json::to_string(&event)
+                    && socket
                         .send(axum::extract::ws::Message::Text(json.into()))
                         .await
                         .is_err()
-                    {
-                        break;
-                    }
+                {
+                    break;
                 }
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -1182,7 +1180,7 @@ mod tests {
                     height: 160,
                     pitch: 240 * 4,
                     pixel_format: PixelFormat::XRGB8888,
-                    data: vec![0x00, 0x00, 0xff, 0xff].repeat(240 * 160),
+                    data: [0x00, 0x00, 0xff, 0xff].repeat(240 * 160),
                     sequence: 0,
                     timestamp_ms: 0,
                 },
