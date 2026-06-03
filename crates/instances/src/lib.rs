@@ -62,8 +62,8 @@ pub enum InstanceError {
     MaxInstancesReached,
     #[error("unsafe capture path")]
     UnsafeCapturePath,
-    #[error("docker command failed: {0}")]
-    Docker(String),
+    #[error("backend error: {0}")]
+    Backend(String),
     #[error("instance not found")]
     NotFound,
     #[error("process error: {0}")]
@@ -260,37 +260,6 @@ async fn check_worker_alive(socket_path: &str) -> bool {
     )
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct DockerCliDriver;
-
-#[async_trait]
-impl InstanceBackend for DockerCliDriver {
-    async fn create_instance(
-        &self,
-        opts: CreateInstanceOptions,
-    ) -> Result<WorkerInfo, InstanceError> {
-        let _ = opts.core_path;
-        let _ = opts.rom_path;
-        Ok(WorkerInfo {
-            pid: 0,
-            socket_path: opts.socket_path,
-        })
-    }
-
-    async fn stop_instance(&self, _instance_id: &str) -> Result<(), InstanceError> {
-        Ok(())
-    }
-
-    async fn list_managed_instances(&self) -> Result<Vec<ManagedInstanceInfo>, InstanceError> {
-        // Deliberately conservative shell-driver scaffold: real bollard backend can replace this without changing manager API.
-        Ok(Vec::new())
-    }
-
-    async fn inspect_running(&self, _instance_id: &str) -> Result<bool, InstanceError> {
-        Ok(false)
-    }
-}
-
 struct ManagedChild {
     child: Child,
     socket_path: String,
@@ -477,7 +446,7 @@ mod tests {
         }
         async fn stop_instance(&self, instance_id: &str) -> Result<(), InstanceError> {
             if *self.fail_stop.lock().unwrap() {
-                return Err(InstanceError::Docker("stop failed".to_string()));
+                return Err(InstanceError::Backend("stop failed".to_string()));
             }
             self.stopped.lock().unwrap().push(instance_id.to_string());
             Ok(())
@@ -564,7 +533,7 @@ mod tests {
         *backend.fail_stop.lock().unwrap() = true;
         assert_eq!(
             manager.destroy(&info.id).await.unwrap_err(),
-            InstanceError::Docker("stop failed".to_string())
+            InstanceError::Backend("stop failed".to_string())
         );
         assert!(manager.get(&info.id).await.is_some());
     }
