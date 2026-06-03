@@ -4,7 +4,7 @@ use grokemon_config::load_from_env;
 use grokemon_gateway::admin::{AdminState, admin_routes};
 use grokemon_gateway::{GatewayState, SessionCommandService, app};
 use grokemon_instances::{InstanceManager, ProcessBackend};
-use grokemon_streaming::{FrameHub, InputLogBus};
+use grokemon_streaming::{FrameHub, InputLogBus, StreamMetrics};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
@@ -37,9 +37,11 @@ async fn main() {
     let input_log = Arc::new(InputLogBus::new());
 
     let session_state = GatewayState::new(acl, commands, frame_hub, input_log);
+    let stream_metrics = Arc::new(StreamMetrics::new());
     let admin_state = AdminState {
         admin_token: config.admin_token.clone(),
         manager: manager.clone(),
+        stream_metrics,
     };
 
     let app: Router = app(session_state).nest(

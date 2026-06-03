@@ -6,11 +6,13 @@ use axum::{
     routing::{delete, get, post},
 };
 use grokemon_instances::{InstanceBackend, InstanceError, InstanceManager};
+use grokemon_streaming::StreamMetrics;
 use std::sync::Arc;
 
 pub struct AdminState<B: InstanceBackend> {
     pub admin_token: String,
     pub manager: Arc<InstanceManager<B>>,
+    pub stream_metrics: Arc<StreamMetrics>,
 }
 
 impl<B: InstanceBackend> Clone for AdminState<B> {
@@ -18,15 +20,21 @@ impl<B: InstanceBackend> Clone for AdminState<B> {
         Self {
             admin_token: self.admin_token.clone(),
             manager: self.manager.clone(),
+            stream_metrics: self.stream_metrics.clone(),
         }
     }
 }
 
 impl<B: InstanceBackend> AdminState<B> {
-    pub fn new(admin_token: impl Into<String>, manager: Arc<InstanceManager<B>>) -> Self {
+    pub fn new(
+        admin_token: impl Into<String>,
+        manager: Arc<InstanceManager<B>>,
+        stream_metrics: Arc<StreamMetrics>,
+    ) -> Self {
         Self {
             admin_token: admin_token.into(),
             manager,
+            stream_metrics,
         }
     }
 }
@@ -138,8 +146,8 @@ async fn stream_metrics<B: InstanceBackend>(
     if !check_admin_token(&headers, &state.admin_token) {
         return unauthorized();
     }
-    // Placeholder — Task 19 will implement real metrics.
-    (StatusCode::OK, Json(serde_json::json!({ "instances": [] }))).into_response()
+    let snapshot = state.stream_metrics.snapshot().await;
+    (StatusCode::OK, Json(snapshot)).into_response()
 }
 
 #[cfg(test)]
@@ -192,7 +200,8 @@ mod tests {
             ..GatewayConfig::default()
         };
         let manager = Arc::new(InstanceManager::new(config, Arc::new(FakeBackend)));
-        let state = AdminState::new("test-token", manager);
+        let stream_metrics = Arc::new(StreamMetrics::new());
+        let state = AdminState::new("test-token", manager, stream_metrics);
         let admin = admin_routes::<FakeBackend>().with_state(state);
         let app = Router::new().nest("/admin", admin);
         (app, "test-token".to_string())
