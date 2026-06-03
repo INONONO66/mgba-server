@@ -4,13 +4,14 @@ use grokemon_config::GatewayConfig;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    sync::Arc,
+    sync::{Arc, Mutex as StdMutex},
     time::Duration,
 };
 use thiserror::Error;
 use tokio::{
     process::{Child, Command},
     sync::{Mutex, RwLock},
+    task::JoinHandle,
 };
 use uuid::Uuid;
 
@@ -80,12 +81,24 @@ pub trait InstanceBackend: Send + Sync + 'static {
     async fn inspect_running(&self, instance_id: &str) -> Result<bool, InstanceError>;
 }
 
-#[derive(Clone)]
 pub struct InstanceManager<B: InstanceBackend> {
     config: GatewayConfig,
     backend: Arc<B>,
     instances: Arc<RwLock<HashMap<String, InstanceInfo>>>,
     pending_creates: Arc<Mutex<usize>>,
+    health_check_handle: Arc<StdMutex<Option<JoinHandle<()>>>>,
+}
+
+impl<B: InstanceBackend> Clone for InstanceManager<B> {
+    fn clone(&self) -> Self {
+        Self {
+            config: self.config.clone(),
+            backend: self.backend.clone(),
+            instances: self.instances.clone(),
+            pending_creates: self.pending_creates.clone(),
+            health_check_handle: self.health_check_handle.clone(),
+        }
+    }
 }
 
 impl<B: InstanceBackend> InstanceManager<B> {
@@ -95,6 +108,7 @@ impl<B: InstanceBackend> InstanceManager<B> {
             backend,
             instances: Arc::new(RwLock::new(HashMap::new())),
             pending_creates: Arc::new(Mutex::new(0)),
+            health_check_handle: Arc::new(StdMutex::new(None)),
         }
     }
 
@@ -170,6 +184,80 @@ impl<B: InstanceBackend> InstanceManager<B> {
         let _ = self.backend.list_managed_instances().await?;
         Ok(())
     }
+
+    pub fn start_health_checks(&self) {
+        let instances = self.instances.clone();
+        let interval_secs = 10u64;
+
+        let handle = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+
+                let instance_list: Vec<(String, String)> = {
+                    let map = instances.read().await;
+                    map.values()
+                        .filter(|i| i.status == InstanceStatus::Running)
+                        .map(|i| (i.id.clone(), i.socket_path.clone()))
+                        .collect()
+                };
+
+                for (id, socket_path) in instance_list {
+                    let is_alive = check_worker_alive(&socket_path).await;
+                    if !is_alive {
+                        let mut map = instances.write().await;
+                        if let Some(info) = map.get_mut(&id) {
+                            info.status = InstanceStatus::Error;
+                        }
+                    }
+                }
+            }
+        });
+
+        *self.health_check_handle.lock().unwrap() = Some(handle);
+    }
+
+    pub fn stop_health_checks(&self) {
+        if let Some(handle) = self.health_check_handle.lock().unwrap().take() {
+            handle.abort();
+        }
+    }
+
+    pub async fn mark_error(&self, instance_id: &str) {
+        let mut map = self.instances.write().await;
+        if let Some(info) = map.get_mut(instance_id) {
+            info.status = InstanceStatus::Error;
+        }
+    }
+
+    pub async fn cleanup_stale_sockets(&self) {
+        let socket_dir = &self.config.worker_socket_dir;
+        if let Ok(mut entries) = tokio::fs::read_dir(socket_dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                if path.extension().map(|e| e == "sock").unwrap_or(false) {
+                    let _ = tokio::fs::remove_file(&path).await;
+                }
+            }
+        }
+    }
+}
+
+async fn check_worker_alive(socket_path: &str) -> bool {
+    use grokemon_ipc::transport::IpcClient;
+    use grokemon_ipc::{WorkerCommand, WorkerCommandV1, WorkerResponse, WorkerResponseV1};
+
+    let Ok(mut client) = IpcClient::connect(socket_path).await else {
+        return false;
+    };
+
+    matches!(
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            client.call(WorkerCommand::V1(WorkerCommandV1::Ping)),
+        )
+        .await,
+        Ok(Ok(WorkerResponse::V1(WorkerResponseV1::Pong)))
+    )
 }
 
 #[derive(Debug, Clone, Default)]
@@ -394,9 +482,7 @@ mod tests {
             self.stopped.lock().unwrap().push(instance_id.to_string());
             Ok(())
         }
-        async fn list_managed_instances(
-            &self,
-        ) -> Result<Vec<ManagedInstanceInfo>, InstanceError> {
+        async fn list_managed_instances(&self) -> Result<Vec<ManagedInstanceInfo>, InstanceError> {
             Ok(Vec::new())
         }
         async fn inspect_running(&self, _instance_id: &str) -> Result<bool, InstanceError> {
@@ -481,6 +567,60 @@ mod tests {
             InstanceError::Docker("stop failed".to_string())
         );
         assert!(manager.get(&info.id).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn health_check_marks_dead_instance_as_error() {
+        let backend = Arc::new(FakeBackend::default());
+        let manager = InstanceManager::new(
+            GatewayConfig {
+                libretro_core_path: "/tmp/core.so".to_string(),
+                worker_socket_dir: "/tmp/test-workers".to_string(),
+                ..GatewayConfig::default()
+            },
+            backend,
+        );
+
+        let info = manager.create("session-health").await.unwrap();
+        assert_eq!(info.status, InstanceStatus::Running);
+
+        manager.mark_error(&info.id).await;
+
+        let updated = manager.get(&info.id).await.unwrap();
+        assert_eq!(updated.status, InstanceStatus::Error);
+    }
+
+    #[tokio::test]
+    async fn start_stop_health_checks() {
+        let backend = Arc::new(FakeBackend::default());
+        let manager = InstanceManager::new(GatewayConfig::default(), backend);
+
+        manager.start_health_checks();
+        manager.stop_health_checks();
+    }
+
+    #[tokio::test]
+    async fn cleanup_stale_sockets_removes_dot_sock_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_str().unwrap().to_string();
+        let stale = tmp.path().join("stale.sock");
+        let other = tmp.path().join("keep.txt");
+        tokio::fs::write(&stale, b"").await.unwrap();
+        tokio::fs::write(&other, b"hello").await.unwrap();
+
+        let backend = Arc::new(FakeBackend::default());
+        let manager = InstanceManager::new(
+            GatewayConfig {
+                worker_socket_dir: dir,
+                ..GatewayConfig::default()
+            },
+            backend,
+        );
+
+        manager.cleanup_stale_sockets().await;
+
+        assert!(!tokio::fs::try_exists(&stale).await.unwrap());
+        assert!(tokio::fs::try_exists(&other).await.unwrap());
     }
 
     mod process_tests {
