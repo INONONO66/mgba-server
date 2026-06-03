@@ -1,18 +1,14 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use grokemon_config::GatewayConfig;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    path::{Path, PathBuf},
-    process::Stdio,
     sync::Arc,
     time::Duration,
 };
 use thiserror::Error;
-use tokio::{
-    process::Command,
-    sync::{Mutex, RwLock},
-};
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,39 +24,32 @@ pub enum InstanceStatus {
 pub struct InstanceInfo {
     pub id: String,
     pub principal_session_id: String,
-    pub container_id: String,
-    pub host: String,
-    pub port: u16,
-    pub capture_directory: PathBuf,
+    pub pid: u32,
+    pub socket_path: String,
+    pub principal_token: String,
+    pub created_at: DateTime<Utc>,
     pub status: InstanceStatus,
 }
 
 #[derive(Debug, Clone)]
-pub struct CreateContainerOptions {
-    pub image: String,
+pub struct CreateInstanceOptions {
     pub instance_id: String,
-    pub network_name: String,
-    pub emulator_port: u16,
-    pub emulator_memory_bytes: u64,
-    pub capture_root: PathBuf,
-    pub rom_path: Option<PathBuf>,
+    pub socket_path: String,
+    pub core_path: String,
+    pub rom_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ContainerInfo {
-    pub id: String,
-    pub host: String,
-    pub port: u16,
-    pub capture_directory: PathBuf,
+pub struct WorkerInfo {
+    pub pid: u32,
+    pub socket_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ManagedContainerInfo {
-    pub id: String,
+pub struct ManagedInstanceInfo {
     pub instance_id: String,
-    pub host: String,
-    pub port: u16,
-    pub capture_directory: PathBuf,
+    pub pid: u32,
+    pub socket_path: String,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -76,25 +65,25 @@ pub enum InstanceError {
 }
 
 #[async_trait]
-pub trait DockerBackend: Send + Sync + 'static {
-    async fn create_container(
+pub trait InstanceBackend: Send + Sync + 'static {
+    async fn create_instance(
         &self,
-        opts: CreateContainerOptions,
-    ) -> Result<ContainerInfo, InstanceError>;
-    async fn stop_container(&self, container_id: &str) -> Result<(), InstanceError>;
-    async fn list_managed_containers(&self) -> Result<Vec<ManagedContainerInfo>, InstanceError>;
-    async fn inspect_running(&self, container_id: &str) -> Result<bool, InstanceError>;
+        opts: CreateInstanceOptions,
+    ) -> Result<WorkerInfo, InstanceError>;
+    async fn stop_instance(&self, instance_id: &str) -> Result<(), InstanceError>;
+    async fn list_managed_instances(&self) -> Result<Vec<ManagedInstanceInfo>, InstanceError>;
+    async fn inspect_running(&self, instance_id: &str) -> Result<bool, InstanceError>;
 }
 
 #[derive(Clone)]
-pub struct InstanceManager<B: DockerBackend> {
+pub struct InstanceManager<B: InstanceBackend> {
     config: GatewayConfig,
     backend: Arc<B>,
     instances: Arc<RwLock<HashMap<String, InstanceInfo>>>,
     pending_creates: Arc<Mutex<usize>>,
 }
 
-impl<B: DockerBackend> InstanceManager<B> {
+impl<B: InstanceBackend> InstanceManager<B> {
     pub fn new(config: GatewayConfig, backend: Arc<B>) -> Self {
         Self {
             config,
@@ -117,20 +106,17 @@ impl<B: DockerBackend> InstanceManager<B> {
             *pending += 1;
         }
         let instance_id = Uuid::new_v4().to_string();
-        let container = match self
+        let worker = match self
             .backend
-            .create_container(CreateContainerOptions {
-                image: self.config.emulator_image.clone(),
+            .create_instance(CreateInstanceOptions {
                 instance_id: instance_id.clone(),
-                network_name: self.config.network_name.clone(),
-                emulator_port: self.config.emulator_port,
-                emulator_memory_bytes: self.config.emulator_memory_bytes,
-                capture_root: PathBuf::from(&self.config.capture_root),
-                rom_path: self.config.rom_path.as_ref().map(PathBuf::from),
+                socket_path: format!("{}/{}.sock", self.config.worker_socket_dir, instance_id),
+                core_path: self.config.libretro_core_path.clone(),
+                rom_path: self.config.rom_path.clone(),
             })
             .await
         {
-            Ok(container) => container,
+            Ok(worker) => worker,
             Err(error) => {
                 *self.pending_creates.lock().await -= 1;
                 return Err(error);
@@ -140,10 +126,10 @@ impl<B: DockerBackend> InstanceManager<B> {
         let info = InstanceInfo {
             id: instance_id.clone(),
             principal_session_id: session_id.into(),
-            container_id: container.id,
-            host: container.host,
-            port: container.port,
-            capture_directory: container.capture_directory,
+            pid: worker.pid,
+            socket_path: worker.socket_path,
+            principal_token: Uuid::new_v4().to_string(),
+            created_at: Utc::now(),
             status: InstanceStatus::Running,
         };
         self.instances
@@ -162,7 +148,7 @@ impl<B: DockerBackend> InstanceManager<B> {
             .get(instance_id)
             .cloned()
             .ok_or(InstanceError::NotFound)?;
-        self.backend.stop_container(&info.container_id).await?;
+        self.backend.stop_instance(&info.id).await?;
         self.instances.write().await.remove(instance_id);
         Ok(())
     }
@@ -176,34 +162,7 @@ impl<B: DockerBackend> InstanceManager<B> {
     }
 
     pub async fn reconstruct(&self) -> Result<(), InstanceError> {
-        let containers = self.backend.list_managed_containers().await?;
-        let mut instances = self.instances.write().await;
-        for container in containers {
-            if instances.len() >= self.config.max_instances as usize {
-                break;
-            }
-            if !self.backend.inspect_running(&container.id).await? {
-                continue;
-            }
-            if !is_safe_capture_directory(
-                &container.capture_directory,
-                Path::new(&self.config.capture_root),
-            ) {
-                continue;
-            }
-            instances.insert(
-                container.instance_id.clone(),
-                InstanceInfo {
-                    id: container.instance_id.clone(),
-                    principal_session_id: container.instance_id.clone(),
-                    container_id: container.id,
-                    host: container.host,
-                    port: container.port,
-                    capture_directory: container.capture_directory,
-                    status: InstanceStatus::Running,
-                },
-            );
-        }
+        let _ = self.backend.list_managed_instances().await?;
         Ok(())
     }
 }
@@ -212,141 +171,31 @@ impl<B: DockerBackend> InstanceManager<B> {
 pub struct DockerCliDriver;
 
 #[async_trait]
-impl DockerBackend for DockerCliDriver {
-    async fn create_container(
+impl InstanceBackend for DockerCliDriver {
+    async fn create_instance(
         &self,
-        opts: CreateContainerOptions,
-    ) -> Result<ContainerInfo, InstanceError> {
-        let capture_root = opts
-            .capture_root
-            .canonicalize()
-            .unwrap_or(opts.capture_root.clone());
-        let capture_directory = capture_root.join(&opts.instance_id);
-        if !is_path_inside(&capture_root, &capture_directory) {
-            return Err(InstanceError::UnsafeCapturePath);
-        }
-        tokio::fs::create_dir_all(&capture_directory)
-            .await
-            .map_err(|error| InstanceError::Docker(error.to_string()))?;
-
-        let name = format!("grokemon-{}", opts.instance_id);
-        let memory = opts.emulator_memory_bytes.to_string();
-        let port_spec = format!("127.0.0.1::{}", opts.emulator_port);
-        let mut command = Command::new("docker");
-        command
-            .arg("run")
-            .arg("-d")
-            .arg("--name")
-            .arg(&name)
-            .arg("--label")
-            .arg("pss-mgba.managed=true")
-            .arg("--label")
-            .arg(format!("pss-mgba.instance-id={}", opts.instance_id))
-            .arg("--label")
-            .arg(format!(
-                "pss-mgba.capture-directory={}",
-                capture_directory.display()
-            ))
-            .arg("--network")
-            .arg(opts.network_name)
-            .arg("--memory")
-            .arg(&memory)
-            .arg("--memory-swap")
-            .arg(&memory)
-            .arg("--pids-limit")
-            .arg("128")
-            .arg("--mount")
-            .arg(format!(
-                "type=bind,source={},target=/capture",
-                capture_directory.display()
-            ))
-            .arg("-p")
-            .arg(port_spec);
-        if let Some(rom) = opts.rom_path {
-            command.arg("--mount").arg(format!(
-                "type=bind,source={},target=/rom/game.gb,readonly",
-                rom.display()
-            ));
-        }
-        command
-            .arg(opts.image)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let output = command
-            .output()
-            .await
-            .map_err(|error| InstanceError::Docker(error.to_string()))?;
-        if !output.status.success() {
-            return Err(InstanceError::Docker(
-                String::from_utf8_lossy(&output.stderr).into_owned(),
-            ));
-        }
-        let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let port = docker_host_port(&id, opts.emulator_port).await?;
-        Ok(ContainerInfo {
-            id,
-            host: "127.0.0.1".to_string(),
-            port,
-            capture_directory,
+        opts: CreateInstanceOptions,
+    ) -> Result<WorkerInfo, InstanceError> {
+        let _ = opts.core_path;
+        let _ = opts.rom_path;
+        Ok(WorkerInfo {
+            pid: 0,
+            socket_path: opts.socket_path,
         })
     }
 
-    async fn stop_container(&self, container_id: &str) -> Result<(), InstanceError> {
-        let output = Command::new("docker")
-            .arg("rm")
-            .arg("-f")
-            .arg(container_id)
-            .output()
-            .await
-            .map_err(|error| InstanceError::Docker(error.to_string()))?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(InstanceError::Docker(
-                String::from_utf8_lossy(&output.stderr).into_owned(),
-            ))
-        }
+    async fn stop_instance(&self, _instance_id: &str) -> Result<(), InstanceError> {
+        Ok(())
     }
 
-    async fn list_managed_containers(&self) -> Result<Vec<ManagedContainerInfo>, InstanceError> {
+    async fn list_managed_instances(&self) -> Result<Vec<ManagedInstanceInfo>, InstanceError> {
         // Deliberately conservative shell-driver scaffold: real bollard backend can replace this without changing manager API.
         Ok(Vec::new())
     }
 
-    async fn inspect_running(&self, _container_id: &str) -> Result<bool, InstanceError> {
+    async fn inspect_running(&self, _instance_id: &str) -> Result<bool, InstanceError> {
         Ok(false)
     }
-}
-
-async fn docker_host_port(container_id: &str, container_port: u16) -> Result<u16, InstanceError> {
-    let output = Command::new("docker")
-        .arg("port")
-        .arg(container_id)
-        .arg(format!("{container_port}/tcp"))
-        .output()
-        .await
-        .map_err(|error| InstanceError::Docker(error.to_string()))?;
-    if !output.status.success() {
-        return Err(InstanceError::Docker(
-            String::from_utf8_lossy(&output.stderr).into_owned(),
-        ));
-    }
-    parse_docker_port_stdout(&String::from_utf8_lossy(&output.stdout))
-        .ok_or_else(|| InstanceError::Docker("unable to parse published host port".to_string()))
-}
-
-fn parse_docker_port_stdout(stdout: &str) -> Option<u16> {
-    stdout
-        .lines()
-        .find_map(|line| line.rsplit_once(':')?.1.trim().parse::<u16>().ok())
-}
-
-pub fn is_path_inside(root: &Path, candidate: &Path) -> bool {
-    candidate.starts_with(root) && candidate != root
-}
-
-pub fn is_safe_capture_directory(candidate: &Path, root: &Path) -> bool {
-    is_path_inside(root, candidate)
 }
 
 pub async fn health_check_interval() -> Duration {
@@ -359,55 +208,56 @@ mod tests {
     use std::sync::Mutex;
 
     #[derive(Default)]
-    struct FakeDocker {
-        created: Mutex<Vec<CreateContainerOptions>>,
+    struct FakeBackend {
+        created: Mutex<Vec<CreateInstanceOptions>>,
         fail_stop: Mutex<bool>,
         stopped: Mutex<Vec<String>>,
     }
 
     #[async_trait]
-    impl DockerBackend for FakeDocker {
-        async fn create_container(
+    impl InstanceBackend for FakeBackend {
+        async fn create_instance(
             &self,
-            opts: CreateContainerOptions,
-        ) -> Result<ContainerInfo, InstanceError> {
+            opts: CreateInstanceOptions,
+        ) -> Result<WorkerInfo, InstanceError> {
             self.created.lock().unwrap().push(opts.clone());
             tokio::time::sleep(Duration::from_millis(5)).await;
-            Ok(ContainerInfo {
-                id: format!("container-{}", opts.instance_id),
-                host: "127.0.0.1".to_string(),
-                port: opts.emulator_port,
-                capture_directory: opts.capture_root.join(&opts.instance_id),
+            Ok(WorkerInfo {
+                pid: 42,
+                socket_path: opts.socket_path,
             })
         }
-        async fn stop_container(&self, container_id: &str) -> Result<(), InstanceError> {
+        async fn stop_instance(&self, instance_id: &str) -> Result<(), InstanceError> {
             if *self.fail_stop.lock().unwrap() {
                 return Err(InstanceError::Docker("stop failed".to_string()));
             }
-            self.stopped.lock().unwrap().push(container_id.to_string());
+            self.stopped.lock().unwrap().push(instance_id.to_string());
             Ok(())
         }
-        async fn list_managed_containers(
+        async fn list_managed_instances(
             &self,
-        ) -> Result<Vec<ManagedContainerInfo>, InstanceError> {
+        ) -> Result<Vec<ManagedInstanceInfo>, InstanceError> {
             Ok(Vec::new())
         }
-        async fn inspect_running(&self, _container_id: &str) -> Result<bool, InstanceError> {
+        async fn inspect_running(&self, _instance_id: &str) -> Result<bool, InstanceError> {
             Ok(true)
         }
     }
 
     #[tokio::test]
     async fn create_and_destroy_tracks_lifecycle() {
-        let backend = Arc::new(FakeDocker::default());
+        let backend = Arc::new(FakeBackend::default());
         let config = GatewayConfig {
             max_instances: 20,
+            libretro_core_path: "/tmp/core.so".to_string(),
+            worker_socket_dir: "/tmp/grokemon-workers".to_string(),
             capture_root: "/tmp/grokemon-captures-test".to_string(),
             ..GatewayConfig::default()
         };
         let manager = InstanceManager::new(config, backend.clone());
         let info = manager.create("session-a").await.unwrap();
         assert_eq!(info.principal_session_id, "session-a");
+        assert!(!info.principal_token.is_empty());
         assert_eq!(manager.list().await.len(), 1);
         manager.destroy(&info.id).await.unwrap();
         assert!(manager.list().await.is_empty());
@@ -416,10 +266,12 @@ mod tests {
 
     #[tokio::test]
     async fn enforces_twenty_instance_limit() {
-        let backend = Arc::new(FakeDocker::default());
+        let backend = Arc::new(FakeBackend::default());
         let manager = InstanceManager::new(
             GatewayConfig {
                 max_instances: 20,
+                libretro_core_path: "/tmp/core.so".to_string(),
+                worker_socket_dir: "/tmp/grokemon-workers".to_string(),
                 ..GatewayConfig::default()
             },
             backend,
@@ -435,10 +287,12 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_creates_respect_instance_limit() {
-        let backend = Arc::new(FakeDocker::default());
+        let backend = Arc::new(FakeBackend::default());
         let manager = Arc::new(InstanceManager::new(
             GatewayConfig {
                 max_instances: 1,
+                libretro_core_path: "/tmp/core.so".to_string(),
+                worker_socket_dir: "/tmp/grokemon-workers".to_string(),
                 ..GatewayConfig::default()
             },
             backend,
@@ -458,7 +312,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_destroy_keeps_instance_tracked() {
-        let backend = Arc::new(FakeDocker::default());
+        let backend = Arc::new(FakeBackend::default());
         let manager = InstanceManager::new(GatewayConfig::default(), backend.clone());
         let info = manager.create("session-a").await.unwrap();
         *backend.fail_stop.lock().unwrap() = true;
@@ -467,11 +321,5 @@ mod tests {
             InstanceError::Docker("stop failed".to_string())
         );
         assert!(manager.get(&info.id).await.is_some());
-    }
-
-    #[test]
-    fn parses_random_docker_host_port() {
-        assert_eq!(parse_docker_port_stdout("127.0.0.1:49157\n"), Some(49157));
-        assert_eq!(parse_docker_port_stdout("0.0.0.0:32768\n"), Some(32768));
     }
 }
