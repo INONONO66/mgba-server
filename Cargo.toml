@@ -67,3 +67,22 @@ path = "src/bin/gateway.rs"
 [[bin]]
 name = "worker"
 path = "src/bin/worker.rs"
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+[dev-dependencies]
+grokemon-auth = { path = "crates/auth" }
+grokemon-config = { path = "crates/config" }
+grokemon-gateway = { path = "crates/gateway" }
+grokemon-instances = { path = "crates/instances" }
+grokemon-mgba = { path = "crates/mgba" }
+grokemon-streaming = { path = "crates/streaming" }
+async-trait = { workspace = true }
+axum = { workspace = true }
+futures = { workspace = true }
+http = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }

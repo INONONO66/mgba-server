@@ -1,0 +1,19 @@
+   Compiling grokemon-instances v0.1.0 (/Users/ino/Develop/mgba-server/crates/instances)
+   Compiling grokemon-gateway v0.1.0 (/Users/ino/Develop/mgba-server/crates/gateway)
+   Compiling mgba-server v0.1.0 (/Users/ino/Develop/mgba-server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.71s
+     Running tests/integration.rs (target/debug/deps/integration-93e9598224c7fba4)
+
+running 9 tests
+test max_instances_returns_503_via_admin_api ... ok
+test max_instances_enforced ... ok
+test full_lifecycle_via_admin_api ... ok
+test concurrent_instance_creation ... ok
+test admin_create_requires_token ... ok
+test admin_create_rejects_wrong_token ... ok
+test admin_list_instances_empty_initially ... ok
+test admin_get_unknown_instance_returns_404 ... ok
+test health_endpoint_returns_ok ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -472,6 +472,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "grokemon-config",
+ "grokemon-ipc",
  "grokemon-mgba",
  "libc",
  "serde",
@@ -772,6 +773,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "futures",
  "grokemon-auth",
  "grokemon-config",
  "grokemon-gateway",
@@ -780,8 +782,11 @@ dependencies = [
  "grokemon-libretro",
  "grokemon-mgba",
  "grokemon-streaming",
+ "http",
  "libc",
+ "serde_json",
  "tokio",
+ "tower",
 ]
 
 [[package]]
