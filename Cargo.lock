@@ -403,6 +403,7 @@ dependencies = [
  "chrono",
  "grokemon-auth",
  "grokemon-config",
+ "grokemon-instances",
  "grokemon-mgba",
  "http",
  "serde",
@@ -420,6 +421,7 @@ dependencies = [
  "chrono",
  "grokemon-config",
  "grokemon-mgba",
+ "libc",
  "serde",
  "tempfile",
  "thiserror",
@@ -699,6 +701,19 @@ checksum = "6b947ae49db0d222b1dbc6b113ce7248a3fc3a6ca21b696717bfc000ba4484d8"
 [[package]]
 name = "mgba-server"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "grokemon-auth",
+ "grokemon-config",
+ "grokemon-gateway",
+ "grokemon-instances",
+ "grokemon-ipc",
+ "grokemon-libretro",
+ "grokemon-mgba",
+ "libc",
+ "tokio",
+]
 
 [[package]]
 name = "mime"
