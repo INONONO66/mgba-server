@@ -1,0 +1,13 @@
+
+running 1 test
+test protocol::tests::keyframe_encoding_produces_valid_deflate ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+
+running 2 tests
+test protocol::tests::delta_encoding_empty_frame_is_valid ... ok
+test protocol::tests::delta_encoding_detects_changed_tiles ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s
+

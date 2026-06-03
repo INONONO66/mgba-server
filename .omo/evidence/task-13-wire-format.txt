@@ -1,0 +1,28 @@
+
+running 18 tests
+test protocol::tests::header_size_is_34 ... ok
+test protocol::tests::encode_known_frame_matches_wire_format_spec ... ok
+test frame_hub::tests::unregister_removes_instance ... ok
+test input_log::tests::subscribe_receives_live_events ... ok
+test protocol::tests::metadata_serializes_as_camel_case_sidecar ... ok
+test input_log::tests::input_event_lifecycle ... ok
+test protocol::tests::viewer_control_client_metrics_sanitized ... ok
+test input_log::tests::fail_input_marks_failed ... ok
+test protocol::tests::viewer_control_keyframe_parsed ... ok
+test protocol::tests::viewer_control_too_large_rejected ... ok
+test protocol::tests::encode_decode_roundtrip ... ok
+test frame_hub::tests::latest_frame_returns_current ... ok
+test frame_hub::tests::push_and_subscribe ... ok
+test protocol::tests::delta_encoding_empty_frame_is_valid ... ok
+test frame_hub::tests::backpressure_drops_old_frames ... ok
+test input_log::tests::recent_capped_at_100 ... ok
+test protocol::tests::delta_encoding_detects_changed_tiles ... ok
+test protocol::tests::keyframe_encoding_produces_valid_deflate ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
