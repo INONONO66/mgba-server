@@ -1,3 +1,9 @@
+[package]
+name = "mgba-server"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
 [workspace]
 members = [
   "crates/auth",
@@ -5,6 +11,9 @@ members = [
   "crates/gateway",
   "crates/instances",
   "crates/mgba",
+  "crates/libretro",
+  "crates/ipc",
+  "crates/streaming",
 ]
 resolver = "2"
 
@@ -17,10 +26,15 @@ version = "0.1.0"
 anyhow = "1"
 async-trait = "0.1"
 axum = { version = "0.8", features = ["macros", "ws"] }
+bincode = "1"
 bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
+flate2 = "1"
 futures = "0.3"
 http = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
+libc = "0.2"
+libloading = "0.8"
 rand = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -31,3 +45,11 @@ tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
 uuid = { version = "1", features = ["serde", "v4"] }
 tempfile = "3"
+
+[[bin]]
+name = "gateway"
+path = "src/bin/gateway.rs"
+
+[[bin]]
+name = "worker"
+path = "src/bin/worker.rs"
