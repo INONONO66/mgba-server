@@ -93,16 +93,41 @@ where
 
 fn api_routes<C: SessionCommandService>() -> Router<GatewayState<C>> {
     Router::new()
-        .route("/sessions/{session_id}/memory/read8", get(read8::<C>))
-        .route("/sessions/{session_id}/memory/read16", get(read16::<C>))
         .route(
-            "/sessions/{session_id}/memory/readrange",
+            "/sessions/{session_id}/core/currentframe",
+            get(current_frame::<C>),
+        )
+        .route("/sessions/{session_id}/core/read8", get(read8::<C>))
+        .route("/sessions/{session_id}/core/read16", get(read16::<C>))
+        .route(
+            "/sessions/{session_id}/core/readrange",
             get(read_range::<C>),
         )
-        .route("/sessions/{session_id}/core/screenshot", post(screenshot::<C>))
+        .route("/sessions/{session_id}/core/write8", post(write8::<C>))
+        .route("/sessions/{session_id}/core/write16", post(write16::<C>))
+        .route("/sessions/{session_id}/core/write32", post(write32::<C>))
+        .route(
+            "/sessions/{session_id}/core/savestateslot",
+            post(save_state::<C>),
+        )
+        .route(
+            "/sessions/{session_id}/core/loadstateslot",
+            post(load_state::<C>),
+        )
+        .route("/sessions/{session_id}/core/reset", post(reset::<C>))
+        .route(
+            "/sessions/{session_id}/core/screenshot",
+            post(screenshot::<C>),
+        )
         .route("/sessions/{session_id}/screenshot", get(screenshot::<C>))
-        .route("/sessions/{session_id}/input/tap", post(tap::<C>))
-        .route("/sessions/{session_id}/input/hold", post(hold::<C>))
+        .route(
+            "/sessions/{session_id}/mgba-http/button/tap",
+            post(tap::<C>),
+        )
+        .route(
+            "/sessions/{session_id}/mgba-http/button/hold",
+            post(hold::<C>),
+        )
         .route("/sessions/{session_id}/logs", get(logs::<C>))
         .route("/sessions/{session_id}/stream", get(stream::<C>))
 }
@@ -367,6 +392,59 @@ async fn stream<C: SessionCommandService>(
     }
 }
 
+async fn input_log_ws<C: SessionCommandService>(
+    State(state): State<GatewayState<C>>,
+    headers: HeaderMap,
+    Path(session): Path<String>,
+    ws: axum::extract::WebSocketUpgrade,
+) -> Response {
+    let session_id = SessionId::new(session.clone());
+    if let Err(error) = authorize(&state, &headers, &session_id, Permission::ViewInputLogs).await {
+        return auth_response(error);
+    }
+    let input_log = state.input_log.clone();
+    ws.on_upgrade(move |socket| async move {
+        handle_input_log_ws(socket, session, input_log).await;
+    })
+}
+
+async fn handle_input_log_ws(
+    mut socket: axum::extract::ws::WebSocket,
+    session_id: String,
+    input_log: Arc<InputLogBus>,
+) {
+    let recent = input_log.recent(&session_id).await;
+    for event in recent {
+        if let Ok(json) = serde_json::to_string(&event) {
+            if socket
+                .send(axum::extract::ws::Message::Text(json.into()))
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+    }
+    let mut rx = input_log.subscribe(&session_id).await;
+    loop {
+        match rx.recv().await {
+            Ok(event) => {
+                if let Ok(json) = serde_json::to_string(&event) {
+                    if socket
+                        .send(axum::extract::ws::Message::Text(json.into()))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+        }
+    }
+}
+
 async fn screenshot<C: SessionCommandService>(
     State(state): State<GatewayState<C>>,
     headers: HeaderMap,
@@ -616,7 +694,7 @@ mod tests {
     use chrono::Utc;
     use grokemon_auth::{AclService, Role};
     use grokemon_mgba::{CommandPriority, CommandTrace};
-    use grokemon_streaming::{FrameHub, PixelFormat, RawFrame};
+    use grokemon_streaming::{FrameHub, InputLogBus, PixelFormat, RawFrame};
     use std::sync::Mutex;
     use tower::ServiceExt;
 
@@ -655,7 +733,16 @@ mod tests {
         }
     }
 
-    async fn fixture(role: Role, session: &str) -> (Router, Arc<FakeCommands>, String, Arc<FrameHub>) {
+    async fn fixture(
+        role: Role,
+        session: &str,
+    ) -> (
+        Router,
+        Arc<FakeCommands>,
+        String,
+        Arc<FrameHub>,
+        Arc<InputLogBus>,
+    ) {
         let mut acl = AclService::new();
         let principal = grokemon_auth::PrincipalId::new("principal-a");
         let token = acl.issue_principal_token(principal.clone()).token;
@@ -663,17 +750,25 @@ mod tests {
         let commands = Arc::new(FakeCommands::default());
         let frame_hub = Arc::new(FrameHub::new());
         frame_hub.register_instance(session).await;
+        let input_log = Arc::new(InputLogBus::new());
         (
-            app(GatewayState::new(acl, commands.clone(), frame_hub.clone())),
+            app(GatewayState::new(
+                acl,
+                commands.clone(),
+                frame_hub.clone(),
+                input_log.clone(),
+            )),
             commands,
             token,
             frame_hub,
+            input_log,
         )
     }
 
     #[tokio::test]
     async fn controller_can_send_key_command() {
-        let (app, commands, token) = fixture(Role::Controller, "session-a");
+        let (app, commands, token, _frame_hub, _input_log) =
+            fixture(Role::Controller, "session-a").await;
         let response = app
             .oneshot(
                 http::Request::builder()
@@ -694,7 +789,8 @@ mod tests {
 
     #[tokio::test]
     async fn viewer_is_forbidden_from_memory_read() {
-        let (app, commands, token) = fixture(Role::Viewer, "session-a");
+        let (app, commands, token, _frame_hub, _input_log) =
+            fixture(Role::Viewer, "session-a").await;
         let response = app
             .oneshot(
                 http::Request::builder()
@@ -711,7 +807,8 @@ mod tests {
 
     #[tokio::test]
     async fn cross_session_token_fails_before_handler() {
-        let (app, commands, token) = fixture(Role::Controller, "session-a");
+        let (app, commands, token, _frame_hub, _input_log) =
+            fixture(Role::Controller, "session-a").await;
         let response = app
             .oneshot(
                 http::Request::builder()
@@ -729,7 +826,8 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_control_args_are_rejected_before_socket_send() {
-        let (app, commands, token) = fixture(Role::Controller, "session-a");
+        let (app, commands, token, _frame_hub, _input_log) =
+            fixture(Role::Controller, "session-a").await;
         let response = app
             .oneshot(
                 http::Request::builder()
@@ -747,7 +845,8 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_memory_args_are_rejected_before_socket_send() {
-        let (app, commands, token) = fixture(Role::Controller, "session-a");
+        let (app, commands, token, _frame_hub, _input_log) =
+            fixture(Role::Controller, "session-a").await;
         let response = app
             .oneshot(
                 http::Request::builder()
@@ -764,7 +863,8 @@ mod tests {
 
     #[tokio::test]
     async fn controller_can_write8() {
-        let (app, commands, token) = fixture(Role::Controller, "session-a");
+        let (app, commands, token, _frame_hub, _input_log) =
+            fixture(Role::Controller, "session-a").await;
         let response = app
             .oneshot(
                 http::Request::builder()
@@ -785,7 +885,8 @@ mod tests {
 
     #[tokio::test]
     async fn controller_can_save_state_slot() {
-        let (app, commands, token) = fixture(Role::Controller, "session-a");
+        let (app, commands, token, _frame_hub, _input_log) =
+            fixture(Role::Controller, "session-a").await;
         let response = app
             .oneshot(
                 http::Request::builder()
@@ -806,7 +907,8 @@ mod tests {
 
     #[tokio::test]
     async fn controller_can_load_state_slot() {
-        let (app, commands, token) = fixture(Role::Controller, "session-a");
+        let (app, commands, token, _frame_hub, _input_log) =
+            fixture(Role::Controller, "session-a").await;
         let response = app
             .oneshot(
                 http::Request::builder()
@@ -827,7 +929,8 @@ mod tests {
 
     #[tokio::test]
     async fn controller_can_reset() {
-        let (app, commands, token) = fixture(Role::Controller, "session-a");
+        let (app, commands, token, _frame_hub, _input_log) =
+            fixture(Role::Controller, "session-a").await;
         let response = app
             .oneshot(
                 http::Request::builder()
@@ -848,7 +951,8 @@ mod tests {
 
     #[tokio::test]
     async fn current_frame_returns_capture() {
-        let (app, commands, token) = fixture(Role::Controller, "session-a");
+        let (app, commands, token, _frame_hub, _input_log) =
+            fixture(Role::Controller, "session-a").await;
         let response = app
             .oneshot(
                 http::Request::builder()
@@ -868,7 +972,8 @@ mod tests {
 
     #[tokio::test]
     async fn missing_token_returns_unauthorized() {
-        let (app, commands, _) = fixture(Role::Controller, "session-a");
+        let (app, commands, _token, _frame_hub, _input_log) =
+            fixture(Role::Controller, "session-a").await;
         let response = app
             .oneshot(
                 http::Request::builder()
@@ -885,7 +990,8 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_write_args_rejected() {
-        let (app, commands, token) = fixture(Role::Controller, "session-a");
+        let (app, commands, token, _frame_hub, _input_log) =
+            fixture(Role::Controller, "session-a").await;
         let response = app
             .oneshot(
                 http::Request::builder()
@@ -903,7 +1009,8 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_slot_rejected() {
-        let (app, commands, token) = fixture(Role::Controller, "session-a");
+        let (app, commands, token, _frame_hub, _input_log) =
+            fixture(Role::Controller, "session-a").await;
         let response = app
             .oneshot(
                 http::Request::builder()
@@ -918,81 +1025,11 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert!(commands.seen.lock().unwrap().is_empty());
     }
-}
-
-    #[tokio::test]
-    async fn viewer_is_forbidden_from_memory_read() {
-        let (app, commands, token, _) = fixture(Role::Viewer, "session-a").await;
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/api/sessions/session-a/memory/read8?address=0xD35E")
-                    .header("authorization", format!("Bearer {token}"))
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert!(commands.seen.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn cross_session_token_fails_before_handler() {
-        let (app, commands, token, _) = fixture(Role::Controller, "session-a").await;
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri("/api/sessions/session-b/input/tap?button=A")
-                    .header("x-principal-token", token)
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-        assert!(commands.seen.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn invalid_control_args_are_rejected_before_socket_send() {
-        let (app, commands, token, _) = fixture(Role::Controller, "session-a").await;
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .method("POST")
-                    .uri("/api/sessions/session-a/input/tap?button=A%2Ccore.read8")
-                    .header("x-principal-token", token)
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert!(commands.seen.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn invalid_memory_args_are_rejected_before_socket_send() {
-        let (app, commands, token, _) = fixture(Role::Controller, "session-a").await;
-        let response = app
-            .oneshot(
-                http::Request::builder()
-                    .uri("/api/sessions/session-a/memory/readrange?address=0xD35E&length=1%2Ccore.read8")
-                    .header("x-principal-token", token)
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert!(commands.seen.lock().unwrap().is_empty());
-    }
 
     #[tokio::test]
     async fn screenshot_returns_503_when_no_frame() {
-        let (app, _, token, _) = fixture(Role::Viewer, "session-a").await;
+        let (app, _commands, token, _frame_hub, _input_log) =
+            fixture(Role::Viewer, "session-a").await;
         let response = app
             .oneshot(
                 http::Request::builder()
@@ -1009,7 +1046,8 @@ mod tests {
 
     #[tokio::test]
     async fn screenshot_returns_png_for_latest_frame() {
-        let (app, _, token, frame_hub) = fixture(Role::Viewer, "session-a").await;
+        let (app, _commands, token, frame_hub, _input_log) =
+            fixture(Role::Viewer, "session-a").await;
         frame_hub
             .push_frame(
                 "session-a",
@@ -1038,9 +1076,14 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.headers().get(header::CONTENT_TYPE).unwrap(), "image/png");
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/png"
+        );
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let image = image::load_from_memory(&body).unwrap();
         assert_eq!(image.width(), 240);
         assert_eq!(image.height(), 160);

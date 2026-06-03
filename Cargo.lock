@@ -716,6 +716,7 @@ dependencies = [
  "grokemon-ipc",
  "grokemon-libretro",
  "grokemon-mgba",
+ "grokemon-streaming",
  "libc",
  "tokio",
 ]

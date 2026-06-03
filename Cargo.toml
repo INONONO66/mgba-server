@@ -54,6 +54,7 @@ grokemon-instances = { path = "crates/instances" }
 grokemon-mgba = { path = "crates/mgba" }
 grokemon-ipc = { path = "crates/ipc" }
 grokemon-libretro = { path = "crates/libretro" }
+grokemon-streaming = { path = "crates/streaming" }
 async-trait = { workspace = true }
 axum = { workspace = true }
 libc = { workspace = true }

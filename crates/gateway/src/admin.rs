@@ -139,11 +139,7 @@ async fn stream_metrics<B: InstanceBackend>(
         return unauthorized();
     }
     // Placeholder — Task 19 will implement real metrics.
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({ "instances": [] })),
-    )
-        .into_response()
+    (StatusCode::OK, Json(serde_json::json!({ "instances": [] }))).into_response()
 }
 
 #[cfg(test)]
@@ -175,9 +171,7 @@ mod tests {
         async fn stop_instance(&self, _instance_id: &str) -> Result<(), InstanceError> {
             Ok(())
         }
-        async fn list_managed_instances(
-            &self,
-        ) -> Result<Vec<ManagedInstanceInfo>, InstanceError> {
+        async fn list_managed_instances(&self) -> Result<Vec<ManagedInstanceInfo>, InstanceError> {
             Ok(Vec::new())
         }
         async fn inspect_running(&self, _instance_id: &str) -> Result<bool, InstanceError> {

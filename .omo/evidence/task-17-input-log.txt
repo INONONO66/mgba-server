@@ -1,0 +1,9 @@
+
+running 4 tests
+test input_log::tests::subscribe_receives_live_events ... ok
+test input_log::tests::input_event_lifecycle ... ok
+test input_log::tests::fail_input_marks_failed ... ok
+test input_log::tests::recent_capped_at_100 ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 0.00s
+
