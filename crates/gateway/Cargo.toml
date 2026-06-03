@@ -10,6 +10,7 @@ chrono.workspace = true
 axum.workspace = true
 grokemon-auth = { path = "../auth" }
 grokemon-config = { path = "../config" }
+grokemon-instances = { path = "../instances" }
 grokemon-mgba = { path = "../mgba" }
 http.workspace = true
 serde.workspace = true

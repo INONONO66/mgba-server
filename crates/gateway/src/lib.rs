@@ -1,3 +1,5 @@
+pub mod admin;
+
 use async_trait::async_trait;
 use axum::{
     Json, Router,
@@ -7,6 +9,7 @@ use axum::{
     routing::{get, post},
 };
 use grokemon_auth::{AclService, AuthError, Permission, PrincipalId, SessionId};
+use grokemon_instances::InstanceBackend;
 use grokemon_mgba::{CommandKind, CommandResult, format_message};
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Duration};
@@ -53,6 +56,15 @@ pub fn app<C: SessionCommandService>(state: GatewayState<C>) -> Router {
         )
         .nest("/api", api_routes())
         .with_state(state)
+}
+
+pub fn app_with_admin<C, B>(state: GatewayState<C>, admin: admin::AdminState<B>) -> Router
+where
+    C: SessionCommandService,
+    B: InstanceBackend,
+{
+    let admin_router = admin::admin_routes::<B>().with_state(admin);
+    app(state).nest("/admin", admin_router)
 }
 
 fn api_routes<C: SessionCommandService>() -> Router<GatewayState<C>> {

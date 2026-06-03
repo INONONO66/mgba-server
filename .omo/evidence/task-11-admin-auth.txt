@@ -1,0 +1,18 @@
+auth tests (token-related subset):
+
+running 5 tests
+test admin::tests::stream_metrics_requires_token ... ok
+test admin::tests::missing_admin_token_returns_401 ... ok
+test admin::tests::wrong_admin_token_returns_401 ... ok
+test admin::tests::create_instance_with_valid_token_returns_200 ... ok
+test tests::cross_session_token_fails_before_handler ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+
+running 2 tests
+test admin::tests::missing_admin_token_returns_401 ... ok
+test admin::tests::wrong_admin_token_returns_401 ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
