@@ -270,7 +270,7 @@ async fn handle_commands(
                     return Ok(());
                 }
                 WorkerCommand::V1(WorkerCommandV1::TakeScreenshot) => {
-                    let response = match state
+                    match state
                         .latest_frame
                         .lock()
                         .expect("frame mutex poisoned")
@@ -286,8 +286,7 @@ async fn handle_commands(
                         None => WorkerResponse::V1(WorkerResponseV1::Error {
                             message: "no frame captured yet".to_string(),
                         }),
-                    };
-                    response
+                    }
                 }
                 WorkerCommand::V1(WorkerCommandV1::LoadRom { .. })
                 | WorkerCommand::V1(WorkerCommandV1::ReadMemory { .. })
