@@ -1,0 +1,36 @@
+   Compiling grokemon-ipc v0.1.0 (/Users/ino/Develop/mgba-server/crates/ipc)
+   Compiling grokemon-mgba v0.1.0 (/Users/ino/Develop/mgba-server/crates/mgba)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.70s
+     Running unittests src/lib.rs (target/debug/deps/grokemon_mgba-ae7bfd37f831028c)
+
+running 21 tests
+test ipc_transport::tests::memory_data_two_byte_response_decodes_le ... ok
+test ipc_transport::tests::current_frame_response_contains_frame_number ... ok
+test ipc_transport::tests::error_response_prefixed_with_error ... ok
+test ipc_transport::tests::message_without_termination_returns_none ... ok
+test ipc_transport::tests::memory_data_range_response_is_hex ... ok
+test ipc_transport::tests::memory_data_single_byte_response ... ok
+test ipc_transport::tests::parse_button_hold_command ... ok
+test ipc_transport::tests::parse_button_hold_uses_default_when_missing_duration ... ok
+test ipc_transport::tests::parse_button_tap_command ... ok
+test ipc_transport::tests::parse_health_command ... ok
+test ipc_transport::tests::parse_load_state_command ... ok
+test ipc_transport::tests::parse_read_range_command ... ok
+test ipc_transport::tests::parse_read16_command ... ok
+test ipc_transport::tests::parse_read8_command ... ok
+test ipc_transport::tests::parse_reset_command ... ok
+test ipc_transport::tests::parse_restart_aliases_to_reset ... ok
+test ipc_transport::tests::parse_save_state_command ... ok
+test ipc_transport::tests::parse_write8_command ... ok
+test ipc_transport::tests::unknown_command_returns_none ... ok
+test scheduler::tests::emits_monotonic_latency_timestamps ... ok
+test scheduler::tests::prioritizes_control_and_memory_over_frame_capture_when_pending ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests grokemon_mgba
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
