@@ -515,4 +515,131 @@ mod tests {
         assert_eq!(encoded[6], 7); // instance_index preserved
         assert_eq!(&encoded[STREAM_HEADER_SIZE..], &nal[..]);
     }
+
+    #[test]
+    fn magic_constant_is_psmg() {
+        assert_eq!(MAGIC, b"PSMG");
+    }
+
+    #[test]
+    fn frame_type_discriminants() {
+        assert_eq!(StreamFrameType::Keyframe as u8, 1);
+        assert_eq!(StreamFrameType::Delta as u8, 2);
+        assert_eq!(StreamFrameType::H264 as u8, 3);
+    }
+
+    #[test]
+    fn deflate_raw_flag_is_0x01() {
+        assert_eq!(flags::DEFLATE_RAW, 0x01);
+    }
+
+    #[test]
+    fn decode_rejects_empty_bytes() {
+        let result = decode_stream_frame(&[]);
+        assert!(result.is_err(), "expected error for empty input");
+    }
+
+    #[test]
+    fn decode_rejects_non_magic_buffer() {
+        let result = decode_stream_frame(b"JPEG-ish");
+        assert!(result.is_err(), "expected error for non-magic input");
+    }
+
+    #[test]
+    fn decode_rejects_truncated_frame() {
+        let encoded = encode_stream_frame(EncodeParams {
+            frame_type: StreamFrameType::Delta,
+            instance_index: 0,
+            sequence: 1,
+            timestamp_ms: 1,
+            width: 1,
+            height: 1,
+            tile_size: 16,
+            raw_bytes: 4,
+            metadata: StreamFrameMetadata::default(),
+            payload: vec![1, 2],
+        });
+        let truncated = &encoded[..encoded.len() - 1];
+        assert!(
+            decode_stream_frame(truncated).is_err(),
+            "expected error for truncated frame"
+        );
+    }
+
+    #[test]
+    fn metadata_roundtrip_with_causality() {
+        let metadata = StreamFrameMetadata {
+            causality: Some(CausalityMetadata {
+                control_event_id: "event-1".to_string(),
+                request_id: Some("request-1".to_string()),
+                input_requested_at_ms: Some(100.0),
+                input_completed_at_ms: Some(120.0),
+                input_latency_ms: Some(20.0),
+                action: None,
+                actor_principal_id: None,
+                button: None,
+                source: None,
+            }),
+            source_capture_started_at_ms: None,
+            source_captured_at_ms: Some(123.0),
+        };
+        let encoded = encode_stream_frame(EncodeParams {
+            frame_type: StreamFrameType::Delta,
+            instance_index: 1,
+            sequence: 43,
+            timestamp_ms: 456,
+            width: 240,
+            height: 160,
+            tile_size: 16,
+            raw_bytes: 240 * 160 * 4,
+            metadata,
+            payload: vec![9, 8, 7],
+        });
+        let (decoded_meta, decoded_payload) = decode_stream_frame(&encoded).unwrap();
+        assert_eq!(decoded_payload, vec![9, 8, 7]);
+        let causality = decoded_meta.causality.expect("causality preserved");
+        assert_eq!(causality.control_event_id, "event-1");
+        assert_eq!(causality.request_id.as_deref(), Some("request-1"));
+        assert_eq!(causality.input_latency_ms, Some(20.0));
+        assert_eq!(decoded_meta.source_captured_at_ms, Some(123.0));
+    }
+
+    #[test]
+    fn viewer_control_unknown_type_rejected() {
+        let msg = br#"{"type":"unknown-type-here"}"#;
+        let result = parse_viewer_control_message(msg);
+        assert!(matches!(result, Err(ProtocolError::UnknownType(_))));
+    }
+
+    #[test]
+    fn viewer_control_invalid_json_rejected() {
+        let msg = b"not json at all";
+        let result = parse_viewer_control_message(msg);
+        assert!(matches!(result, Err(ProtocolError::InvalidJson(_))));
+    }
+
+    #[test]
+    fn viewer_control_missing_type_rejected() {
+        let msg = br#"{"foo":"bar"}"#;
+        let result = parse_viewer_control_message(msg);
+        assert!(matches!(result, Err(ProtocolError::InvalidJson(_))));
+    }
+
+    #[test]
+    fn encode_header_size_matches_constant() {
+        let encoded = encode_stream_frame(EncodeParams {
+            frame_type: StreamFrameType::Keyframe,
+            instance_index: 0,
+            sequence: 1,
+            timestamp_ms: 1,
+            width: 1,
+            height: 1,
+            tile_size: 16,
+            raw_bytes: 4,
+            metadata: StreamFrameMetadata::default(),
+            payload: vec![1, 2, 3, 4],
+        });
+        assert_eq!(encoded.len(), STREAM_HEADER_SIZE + 4);
+        assert_eq!(&encoded[0..4], MAGIC);
+    }
 }

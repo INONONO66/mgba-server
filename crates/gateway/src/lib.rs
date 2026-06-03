@@ -1045,6 +1045,132 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn controller_can_read16() {
+        let (app, commands, token, _frame_hub, _input_log) =
+            fixture(Role::Controller, "session-a").await;
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/api/sessions/session-a/core/read16?address=0xD35E")
+                    .header("x-principal-token", token)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            commands.seen.lock().unwrap()[0],
+            "session-a:MemoryRead:core.read16,0xD35E<|END|>"
+        );
+    }
+
+    #[tokio::test]
+    async fn controller_can_read_range() {
+        let (app, commands, token, _frame_hub, _input_log) =
+            fixture(Role::Controller, "session-a").await;
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/api/sessions/session-a/core/readrange?address=0xD35E&length=3")
+                    .header("x-principal-token", token)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            commands.seen.lock().unwrap()[0],
+            "session-a:MemoryRead:core.readRange,0xD35E,3<|END|>"
+        );
+    }
+
+    #[tokio::test]
+    async fn controller_can_read8() {
+        let (app, commands, token, _frame_hub, _input_log) =
+            fixture(Role::Controller, "session-a").await;
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .uri("/api/sessions/session-a/core/read8?address=0xD35E")
+                    .header("x-principal-token", token)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            commands.seen.lock().unwrap()[0],
+            "session-a:MemoryRead:core.read8,0xD35E<|END|>"
+        );
+    }
+
+    #[tokio::test]
+    async fn controller_can_button_hold() {
+        let (app, commands, token, _frame_hub, _input_log) =
+            fixture(Role::Controller, "session-a").await;
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/api/sessions/session-a/mgba-http/button/hold?button=B&duration=15")
+                    .header("x-principal-token", token)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            commands.seen.lock().unwrap()[0],
+            "session-a:Control:mgba-http.button.hold,B,15<|END|>"
+        );
+    }
+
+    #[tokio::test]
+    async fn controller_button_hold_default_duration() {
+        let (app, commands, token, _frame_hub, _input_log) =
+            fixture(Role::Controller, "session-a").await;
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/api/sessions/session-a/mgba-http/button/hold?button=Start")
+                    .header("x-principal-token", token)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            commands.seen.lock().unwrap()[0],
+            "session-a:Control:mgba-http.button.hold,Start,15<|END|>"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_button_rejected() {
+        let (app, commands, token, _frame_hub, _input_log) =
+            fixture(Role::Controller, "session-a").await;
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/api/sessions/session-a/mgba-http/button/tap?button=NotAButton")
+                    .header("x-principal-token", token)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(commands.seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn screenshot_returns_png_for_latest_frame() {
         let (app, _commands, token, frame_hub, _input_log) =
             fixture(Role::Viewer, "session-a").await;
