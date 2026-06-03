@@ -1,0 +1,52 @@
+{
+  "schema": "pss-mgba-headless-benchmark/v1",
+  "task": "task-24 benchmark suite port/validation",
+  "generated_at": "2026-06-04",
+  "rust_server_build": "release",
+  "release_build": {
+    "command": "cargo build --release --bin gateway --bin worker 2>&1",
+    "status": "SUCCESS",
+    "binaries_verified": [
+      "target/release/gateway",
+      "target/release/worker"
+    ]
+  },
+  "tooling": {
+    "pnpm_available": true,
+    "pnpm_path": "/opt/homebrew/bin/pnpm",
+    "benchmark_script": "src/benchmark/headless.ts"
+  },
+  "gateway_health": {
+    "command": "ADMIN_TOKEN=test-token ./target/release/gateway; curl -s http://localhost:8787/health",
+    "status": "ok",
+    "response": { "ok": true }
+  },
+  "benchmark_compatibility": {
+    "status": "COMPATIBLE_WITH_REST_API",
+    "evidence": "The TS headless benchmark targets the same Rust REST/admin/WebSocket API paths: /admin/instances, /admin/metrics/streams, /ws/sessions/:id/stream, /api/sessions/:id/mgba-http/button/tap, and /api/sessions/:id/core/read8.",
+    "attempted_command": "pnpm run benchmark:headless -- --base-url http://127.0.0.1:8787 --admin-token test-token --instances 1 --duration-ms 5000 --allow-reduced-target --output /tmp/mgba-task24-benchmark-output.json --summary-output /tmp/mgba-task24-benchmark-summary.txt",
+    "attempt_result": "STARTED_AGAINST_RUST_GATEWAY_BUT_INSTANCE_CREATION_FAILED_WITH_MISSING_WORKER_RUNTIME_ASSETS",
+    "attempt_exit_code": 1,
+    "failure_detail": "POST /admin/instances failed: 500 {\"error\":\"process error: worker socket did not appear within 10s\"}",
+    "blocker": "Full benchmark execution requires mGBA libretro core and test ROM runtime inputs (LIBRETRO_CORE_PATH and TEST_ROM_PATH) so the worker can start and expose its socket."
+  },
+  "performance_targets": {
+    "strict_acceptance": {
+      "instances": 20,
+      "duration_ms": 60000,
+      "min_p95_fps": 60,
+      "max_dropped_or_late_ratio": 0.01,
+      "max_total_ram_bytes": 17179869184,
+      "requires_gateway_pid_rss": true,
+      "requires_stream_metric_delta": true
+    },
+    "latency_targets": {
+      "max_key_send_p95_ms": 100,
+      "max_memory_read_p95_ms": 100,
+      "max_screen_reflection_p95_ms": 200
+    },
+    "reduced_target_note": "--allow-reduced-target is valid for local compatibility checks but is not a strict performance acceptance pass."
+  },
+  "api_compatibility": "All benchmark-required REST/admin/WebSocket paths match the Rust server API surface; authentication uses X-Admin-Token for admin paths and bearer principal tokens for session paths.",
+  "verdict": "PASS_FOR_TASK_24_BUILD_HEALTH_AND_COMPATIBILITY; FULL_STRICT_PERFORMANCE_RUN_REQUIRES_LIBRETRO_CORE_AND_TEST_ROM"
+}

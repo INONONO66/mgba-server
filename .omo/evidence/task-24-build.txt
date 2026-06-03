@@ -1,0 +1,4 @@
+    Finished `release` profile [optimized] target(s) in 0.05s
+Release build binaries:
+-rwxr-xr-x@ 1 ino  staff  2731520 Jun  4 01:34 target/release/gateway
+-rwxr-xr-x@ 1 ino  staff  1110864 Jun  4 01:34 target/release/worker
