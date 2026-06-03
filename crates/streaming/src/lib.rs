@@ -1,5 +1,6 @@
 //! Streaming protocol types and frame helpers.
 
+pub mod broadcast;
 pub mod frame_hub;
 pub mod input_log;
 pub mod protocol;
