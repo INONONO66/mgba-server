@@ -1,0 +1,36 @@
+Task 21 — H.264-over-WebSocket frame path coexistence proof
+============================================================
+
+Protocol additions (crates/streaming/src/protocol.rs):
+- StreamFrameType::H264 = 3 (alongside Keyframe = 1, Delta = 2)
+- flags::H264_PAYLOAD = 0x02 (alongside NONE = 0x00, DEFLATE_RAW = 0x01)
+- encode_h264_frame(): emits a 34-byte header with frameType=3, flags=0x02,
+  tileSize=0, rawBytes=0, metadataBytes=0, payloadBytes=nal_data.len()
+
+Broadcast gating (crates/streaming/src/broadcast.rs):
+- BroadcastConfig::h264_enabled: bool (default = false)
+- DashboardBroadcast::handle_instance_stream creates a per-connection
+  H264Encoder lazily on the first frame when h264_enabled is true.
+- After every successful tile-delta/keyframe send, the same RawFrame is also
+  encoded via H264Encoder::encode and emitted as a frameType=3 frame.
+- h264_enabled=false (default): only tile delta frames (type 1/2) are sent.
+- h264_enabled=true: both tile delta frames (type 1/2) AND H264 frames
+  (type 3) are sent on the same WebSocket, sharing the 34-byte header
+  layout but using flags::H264_PAYLOAD for the H264 frames.
+
+Existing wire format preserved:
+- StreamFrameType::Keyframe (1) and Delta (2) unchanged.
+- encode_known_frame_matches_wire_format_spec test still passes with the
+  exact byte pattern from the protocol spec.
+
+H264Encoder isolation:
+- H264Encoder (openh264) is not Clone/Send-friendly, so each WebSocket
+  connection owns its own encoder. DashboardBroadcast itself stays Clone
+  and Sync; only the per-connection task holds the encoder.
+
+Verification:
+- `cargo test -p grokemon-streaming` → 34 passed, 0 failed.
+- Dedicated tests: h264_frame_type_is_3, h264_payload_flag_is_0x02,
+  encode_h264_frame_has_correct_header, encode_h264_frame_preserves_nal_payload,
+  broadcast_config_defaults (asserts !h264_enabled), broadcast_config_h264_opt_in.
+- LSP diagnostics on protocol.rs and broadcast.rs: clean.

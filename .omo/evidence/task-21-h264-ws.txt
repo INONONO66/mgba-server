@@ -1,0 +1,57 @@
+
+running 8 tests
+test protocol::tests::encode_h264_frame_has_correct_header ... ok
+test protocol::tests::encode_h264_frame_preserves_nal_payload ... ok
+test protocol::tests::h264_frame_type_is_3 ... ok
+test broadcast::tests::broadcast_config_h264_opt_in ... ok
+test protocol::tests::h264_payload_flag_is_0x02 ... ok
+test h264::tests::yuv420_conversion_correct_dimensions ... ok
+test h264::tests::encode_produces_nal_units ... ok
+test h264::tests::encode_latency_under_5ms ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.01s
+
+
+running 34 tests
+test frame_hub::tests::unregister_removes_instance ... ok
+test input_log::tests::fail_input_marks_failed ... ok
+test broadcast::tests::broadcast_config_h264_opt_in ... ok
+test frame_hub::tests::latest_frame_returns_current ... ok
+test input_log::tests::input_event_lifecycle ... ok
+test frame_hub::tests::push_and_subscribe ... ok
+test broadcast::tests::keyframe_cached_on_push ... ok
+test metrics::tests::empty_snapshot_has_zero_totals ... ok
+test input_log::tests::subscribe_receives_live_events ... ok
+test broadcast::tests::broadcast_config_defaults ... ok
+test metrics::tests::compression_ratio_tracks_bytes_per_frame ... ok
+test metrics::tests::instance_delivery_counts_split_from_dashboard ... ok
+test metrics::tests::metrics_accumulate_correctly ... ok
+test metrics::tests::snapshot_sorted_by_instance_id ... ok
+test metrics::tests::sequence_gaps_accumulate ... ok
+test protocol::tests::encode_h264_frame_has_correct_header ... ok
+test protocol::tests::encode_h264_frame_preserves_nal_payload ... ok
+test protocol::tests::encode_known_frame_matches_wire_format_spec ... ok
+test protocol::tests::encode_decode_roundtrip ... ok
+test protocol::tests::h264_frame_type_is_3 ... ok
+test protocol::tests::delta_encoding_empty_frame_is_valid ... ok
+test protocol::tests::viewer_control_client_metrics_sanitized ... ok
+test protocol::tests::viewer_control_keyframe_parsed ... ok
+test protocol::tests::h264_payload_flag_is_0x02 ... ok
+test protocol::tests::header_size_is_34 ... ok
+test protocol::tests::metadata_serializes_as_camel_case_sidecar ... ok
+test protocol::tests::viewer_control_too_large_rejected ... ok
+test frame_hub::tests::backpressure_drops_old_frames ... ok
+test input_log::tests::recent_capped_at_100 ... ok
+test h264::tests::yuv420_conversion_correct_dimensions ... ok
+test protocol::tests::delta_encoding_detects_changed_tiles ... ok
+test protocol::tests::keyframe_encoding_produces_valid_deflate ... ok
+test h264::tests::encode_produces_nal_units ... ok
+test h264::tests::encode_latency_under_5ms ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

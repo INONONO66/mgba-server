@@ -15,11 +15,13 @@ const MAX_CLIENT_FPS: f64 = 1000.0;
 pub enum StreamFrameType {
     Keyframe = 1,
     Delta = 2,
+    H264 = 3,
 }
 
 pub mod flags {
     pub const NONE: u8 = 0x00;
     pub const DEFLATE_RAW: u8 = 0x01;
+    pub const H264_PAYLOAD: u8 = 0x02;
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -100,6 +102,33 @@ pub fn encode_stream_frame(params: EncodeParams) -> Vec<u8> {
     buf.extend_from_slice(&metadata_json);
     buf.extend_from_slice(&params.payload);
 
+    buf
+}
+
+pub fn encode_h264_frame(
+    nal_data: Vec<u8>,
+    instance_index: u8,
+    sequence: u32,
+    timestamp_ms: u32,
+    width: u16,
+    height: u16,
+) -> Vec<u8> {
+    let payload_bytes = nal_data.len() as u32;
+    let mut buf = Vec::with_capacity(STREAM_HEADER_SIZE + nal_data.len());
+    buf.extend_from_slice(MAGIC);
+    buf.push(STREAM_FORMAT);
+    buf.push(StreamFrameType::H264 as u8);
+    buf.push(instance_index);
+    buf.push(flags::H264_PAYLOAD);
+    buf.extend_from_slice(&sequence.to_be_bytes());
+    buf.extend_from_slice(&timestamp_ms.to_be_bytes());
+    buf.extend_from_slice(&width.to_be_bytes());
+    buf.extend_from_slice(&height.to_be_bytes());
+    buf.extend_from_slice(&0u16.to_be_bytes()); // tileSize = 0 (not applicable)
+    buf.extend_from_slice(&0u32.to_be_bytes()); // rawBytes = 0 (not applicable)
+    buf.extend_from_slice(&payload_bytes.to_be_bytes());
+    buf.extend_from_slice(&0u32.to_be_bytes()); // metadataBytes = 0
+    buf.extend_from_slice(&nal_data);
     buf
 }
 
@@ -446,5 +475,44 @@ mod tests {
     fn viewer_control_too_large_rejected() {
         let msg = vec![b'x'; VIEWER_CONTROL_MAX_BYTES + 1];
         assert!(parse_viewer_control_message(&msg).is_err());
+    }
+
+    #[test]
+    fn h264_frame_type_is_3() {
+        assert_eq!(StreamFrameType::H264 as u8, 3);
+    }
+
+    #[test]
+    fn h264_payload_flag_is_0x02() {
+        assert_eq!(flags::H264_PAYLOAD, 0x02);
+    }
+
+    #[test]
+    fn encode_h264_frame_has_correct_header() {
+        let nal = vec![0u8; 100];
+        let encoded = encode_h264_frame(nal.clone(), 0, 1, 1000, 240, 160);
+        assert_eq!(&encoded[0..4], b"PSMG");
+        assert_eq!(encoded[4], STREAM_FORMAT);
+        assert_eq!(encoded[5], 3); // frameType = H264
+        assert_eq!(encoded[6], 0); // instance_index
+        assert_eq!(encoded[7], flags::H264_PAYLOAD); // flags
+        assert_eq!(u32::from_be_bytes(encoded[8..12].try_into().unwrap()), 1); // sequence
+        assert_eq!(u32::from_be_bytes(encoded[12..16].try_into().unwrap()), 1000); // timestamp_ms
+        assert_eq!(u16::from_be_bytes(encoded[16..18].try_into().unwrap()), 240); // width
+        assert_eq!(u16::from_be_bytes(encoded[18..20].try_into().unwrap()), 160); // height
+        assert_eq!(u16::from_be_bytes(encoded[20..22].try_into().unwrap()), 0); // tile_size
+        assert_eq!(u32::from_be_bytes(encoded[22..26].try_into().unwrap()), 0); // raw_bytes
+        assert_eq!(u32::from_be_bytes(encoded[26..30].try_into().unwrap()), 100); // payloadBytes
+        assert_eq!(u32::from_be_bytes(encoded[30..34].try_into().unwrap()), 0); // metadataBytes
+        assert_eq!(encoded.len(), STREAM_HEADER_SIZE + 100);
+        assert_eq!(&encoded[STREAM_HEADER_SIZE..], &nal[..]);
+    }
+
+    #[test]
+    fn encode_h264_frame_preserves_nal_payload() {
+        let nal: Vec<u8> = (0..50).collect();
+        let encoded = encode_h264_frame(nal.clone(), 7, 42, 2000, 320, 240);
+        assert_eq!(encoded[6], 7); // instance_index preserved
+        assert_eq!(&encoded[STREAM_HEADER_SIZE..], &nal[..]);
     }
 }

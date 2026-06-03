@@ -1,8 +1,10 @@
 use crate::{
     frame_hub::{FrameHub, PixelFormat, RawFrame},
+    h264::H264Encoder,
     protocol::{
         EncodeParams, StreamFrameMetadata, StreamFrameType, ViewerControl, deflate_raw,
-        encode_delta, encode_keyframe, encode_stream_frame, parse_viewer_control_message,
+        encode_delta, encode_h264_frame, encode_keyframe, encode_stream_frame,
+        parse_viewer_control_message,
     },
 };
 use axum::extract::ws::{Message, WebSocket};
@@ -30,6 +32,7 @@ pub struct BroadcastConfig {
     pub keyframe_interval: u32,
     pub backpressure_limit: usize,
     pub tile_size: u16,
+    pub h264_enabled: bool,
 }
 
 impl Default for BroadcastConfig {
@@ -38,6 +41,7 @@ impl Default for BroadcastConfig {
             keyframe_interval: KEYFRAME_INTERVAL,
             backpressure_limit: BACKPRESSURE_LIMIT,
             tile_size: 16,
+            h264_enabled: false,
         }
     }
 }
@@ -85,6 +89,7 @@ impl DashboardBroadcast {
         let mut prev_frame: Option<RawFrame> = None;
         let mut frame_count: u32 = 0;
         let mut recovery_mode = false;
+        let mut h264_encoder: Option<H264Encoder> = None;
 
         let keyframe_cache_clone = keyframe_cache.clone();
         let inst_id_clone = inst_id.clone();
@@ -143,6 +148,16 @@ impl DashboardBroadcast {
 
             match send_binary_with_backpressure(&mut sender, encoded, config.backpressure_limit).await {
                 Ok(true) => {
+                    if config.h264_enabled {
+                        send_h264_frame(
+                            &mut sender,
+                            &mut h264_encoder,
+                            &frame,
+                            instance_index,
+                            config.backpressure_limit,
+                        )
+                        .await;
+                    }
                     prev_frame = Some(frame);
                 }
                 Ok(false) => {
@@ -319,6 +334,47 @@ where
     Ok(true)
 }
 
+async fn send_h264_frame<S>(
+    sender: &mut S,
+    h264_encoder: &mut Option<H264Encoder>,
+    frame: &RawFrame,
+    instance_index: u8,
+    backpressure_limit: usize,
+) where
+    S: futures::Sink<Message> + Unpin,
+    S::Error: std::fmt::Debug,
+{
+    if h264_encoder.is_none() {
+        match H264Encoder::new(frame.width, frame.height) {
+            Ok(encoder) => *h264_encoder = Some(encoder),
+            Err(_) => return,
+        }
+    }
+
+    let Some(encoder) = h264_encoder.as_mut() else {
+        return;
+    };
+
+    let Ok(nal_data) = encoder.encode(frame) else {
+        return;
+    };
+
+    if nal_data.is_empty() {
+        return;
+    }
+
+    let h264_bytes = encode_h264_frame(
+        nal_data,
+        instance_index,
+        frame.sequence as u32,
+        (frame.timestamp_ms % (u32::MAX as u64 + 1)) as u32,
+        frame.width as u16,
+        frame.height as u16,
+    );
+
+    let _ = send_binary_with_backpressure(sender, h264_bytes, backpressure_limit).await;
+}
+
 async fn handle_control_message(
     bytes: &[u8],
     keyframe_cache: &Arc<RwLock<HashMap<String, Vec<u8>>>>,
@@ -381,5 +437,16 @@ mod tests {
         assert_eq!(config.keyframe_interval, 60);
         assert_eq!(config.backpressure_limit, 262_144);
         assert_eq!(config.tile_size, 16);
+        assert!(!config.h264_enabled, "h264 must be disabled by default");
+    }
+
+    #[tokio::test]
+    async fn broadcast_config_h264_opt_in() {
+        let config = BroadcastConfig {
+            h264_enabled: true,
+            ..Default::default()
+        };
+        assert!(config.h264_enabled);
+        assert_eq!(config.keyframe_interval, 60);
     }
 }
