@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub mod transport;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PixelFormat {
     XRGB8888,
