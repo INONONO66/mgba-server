@@ -7,6 +7,7 @@ pub mod input_log;
 pub mod metrics;
 pub mod protocol;
 
+pub use broadcast::{BroadcastConfig, DashboardBroadcast};
 pub use frame_hub::{FrameHub, PixelFormat, RawFrame};
 pub use input_log::{InputEvent, InputEventStatus, InputLogBus};
 pub use metrics::{InstanceMetrics, MetricsSnapshot, StreamMetrics};

@@ -82,9 +82,8 @@ pub fn encode_stream_frame(params: EncodeParams) -> Vec<u8> {
 
     let payload_bytes = params.payload.len() as u32;
     let metadata_bytes = metadata_json.len() as u32;
-    let mut buf = Vec::with_capacity(
-        STREAM_HEADER_SIZE + metadata_json.len() + params.payload.len(),
-    );
+    let mut buf =
+        Vec::with_capacity(STREAM_HEADER_SIZE + metadata_json.len() + params.payload.len());
 
     buf.extend_from_slice(MAGIC);
     buf.push(STREAM_FORMAT);
@@ -244,8 +243,8 @@ pub fn parse_viewer_control_message(bytes: &[u8]) -> Result<ViewerControl, Proto
         return Err(ProtocolError::TooLarge);
     }
 
-    let value: serde_json::Value = serde_json::from_slice(bytes)
-        .map_err(|e| ProtocolError::InvalidJson(e.to_string()))?;
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| ProtocolError::InvalidJson(e.to_string()))?;
     let object = value
         .as_object()
         .ok_or_else(|| ProtocolError::InvalidJson("message must be an object".to_string()))?;
@@ -311,7 +310,10 @@ fn sanitize_client_metrics(value: Option<&serde_json::Value>) -> serde_json::Val
             && number.is_finite()
             && number >= 0.0
         {
-            sanitized.insert(key.to_string(), serde_json::Value::from(number.min(max_value)));
+            sanitized.insert(
+                key.to_string(),
+                serde_json::Value::from(number.min(max_value)),
+            );
         }
     }
 
@@ -362,10 +364,9 @@ mod tests {
         });
 
         let expected = vec![
-            b'P', b'S', b'M', b'G', 0x02, 0x01, 0x04, 0x01, 0x01, 0x02, 0x03, 0x04,
-            0x05, 0x06, 0x07, 0x08, 0x01, 0x00, 0x00, 0xa0, 0x00, 0x10, 0x00, 0x02,
-            0x58, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02,
-            0x03,
+            b'P', b'S', b'M', b'G', 0x02, 0x01, 0x04, 0x01, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+            0x07, 0x08, 0x01, 0x00, 0x00, 0xa0, 0x00, 0x10, 0x00, 0x02, 0x58, 0x00, 0x00, 0x00,
+            0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03,
         ];
         assert_eq!(encoded, expected);
     }
@@ -498,7 +499,10 @@ mod tests {
         assert_eq!(encoded[6], 0); // instance_index
         assert_eq!(encoded[7], flags::H264_PAYLOAD); // flags
         assert_eq!(u32::from_be_bytes(encoded[8..12].try_into().unwrap()), 1); // sequence
-        assert_eq!(u32::from_be_bytes(encoded[12..16].try_into().unwrap()), 1000); // timestamp_ms
+        assert_eq!(
+            u32::from_be_bytes(encoded[12..16].try_into().unwrap()),
+            1000
+        ); // timestamp_ms
         assert_eq!(u16::from_be_bytes(encoded[16..18].try_into().unwrap()), 240); // width
         assert_eq!(u16::from_be_bytes(encoded[18..20].try_into().unwrap()), 160); // height
         assert_eq!(u16::from_be_bytes(encoded[20..22].try_into().unwrap()), 0); // tile_size

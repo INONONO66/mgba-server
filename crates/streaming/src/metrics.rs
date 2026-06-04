@@ -1,8 +1,7 @@
 //! Per-instance streaming metrics tracker.
 //!
-//! Port of `src/streaming/StreamMetrics.ts`. Tracks produced frames, bytes,
-//! keyframe/delta counts, sequence gaps, and delivery success/drops for
-//! dashboard and per-instance subscribers.
+//! Tracks produced frames, bytes, keyframe/delta counts, sequence gaps, and
+//! delivery success/drops for dashboard and per-instance subscribers.
 
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};

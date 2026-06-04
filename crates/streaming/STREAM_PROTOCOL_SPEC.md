@@ -1,7 +1,7 @@
 # Streaming binary protocol spec
 
-This document is the byte-accurate reference for `src/streaming/StreamProtocol.ts`.
-It must remain byte-identical with the TypeScript implementation.
+This document is the byte-accurate reference for the Rust streaming protocol implementation.
+It must remain wire-compatible with the gateway and dashboard stream endpoints.
 
 ## Frame envelope
 
@@ -66,11 +66,11 @@ Decode validation rules:
 
 ### Keyframe payload
 
-Keyframes are `deflateRawSync(raw, { level: 1 })` of the full RGBA frame.
+Keyframes are raw deflate-compressed full RGBA frames at compression level 1.
 
 ### Delta payload
 
-Delta payloads are `deflateRawSync(Buffer.concat([tileCount, ...records]), { level: 1 })` where:
+Delta payloads are raw deflate-compressed tile records at compression level 1 where:
 
 1. `tileCount` is `u16be` changed-tile count
 2. each tile record is:

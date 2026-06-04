@@ -77,6 +77,13 @@ impl FrameHub {
         let channels = self.channels.read().await;
         channels.get(id).and_then(|tx| tx.borrow().clone())
     }
+
+    pub async fn registered_instances(&self) -> Vec<String> {
+        let channels = self.channels.read().await;
+        let mut ids: Vec<String> = channels.keys().cloned().collect();
+        ids.sort();
+        ids
+    }
 }
 
 impl Default for FrameHub {
@@ -158,5 +165,13 @@ mod tests {
         hub.unregister_instance("test-4").await;
         assert!(hub.subscribe("test-4").await.is_none());
         assert!(hub.latest_frame("test-4").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn registered_instances_returns_sorted_ids() {
+        let hub = FrameHub::new();
+        hub.register_instance("z").await;
+        hub.register_instance("a").await;
+        assert_eq!(hub.registered_instances().await, vec!["a", "z"]);
     }
 }

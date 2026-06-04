@@ -1,6 +1,7 @@
 use crate::{
     frame_hub::{FrameHub, PixelFormat, RawFrame},
     h264::H264Encoder,
+    metrics::StreamMetrics,
     protocol::{
         EncodeParams, StreamFrameMetadata, StreamFrameType, ViewerControl, deflate_raw,
         encode_delta, encode_h264_frame, encode_keyframe, encode_stream_frame,
@@ -24,6 +25,7 @@ const KEYFRAME_THROTTLE_MS: u64 = 500;
 pub struct DashboardBroadcast {
     hub: Arc<FrameHub>,
     keyframe_cache: Arc<RwLock<HashMap<String, Vec<u8>>>>,
+    metrics: Arc<StreamMetrics>,
     config: BroadcastConfig,
 }
 
@@ -52,11 +54,24 @@ impl DashboardBroadcast {
     }
 
     pub fn with_config(hub: Arc<FrameHub>, config: BroadcastConfig) -> Self {
+        Self::with_config_and_metrics(hub, config, Arc::new(StreamMetrics::new()))
+    }
+
+    pub fn with_config_and_metrics(
+        hub: Arc<FrameHub>,
+        config: BroadcastConfig,
+        metrics: Arc<StreamMetrics>,
+    ) -> Self {
         Self {
             hub,
             keyframe_cache: Arc::new(RwLock::new(HashMap::new())),
+            metrics,
             config,
         }
+    }
+
+    pub fn metrics(&self) -> &Arc<StreamMetrics> {
+        &self.metrics
     }
 
     pub async fn handle_instance_stream(
@@ -77,13 +92,9 @@ impl DashboardBroadcast {
         {
             let cache = keyframe_cache.read().await;
             if let Some(kf) = cache.get(&instance_id)
-                && send_binary_with_backpressure(
-                    &mut sender,
-                    kf.clone(),
-                    config.backpressure_limit,
-                )
-                .await
-                .is_err()
+                && send_binary_with_backpressure(&mut sender, kf.clone(), config.backpressure_limit)
+                    .await
+                    .is_err()
             {
                 return;
             }
@@ -97,7 +108,8 @@ impl DashboardBroadcast {
         let keyframe_cache_clone = keyframe_cache.clone();
         let inst_id_clone = inst_id.clone();
         tokio::spawn(async move {
-            let mut last_keyframe_request = Instant::now() - Duration::from_millis(KEYFRAME_THROTTLE_MS);
+            let mut last_keyframe_request =
+                Instant::now() - Duration::from_millis(KEYFRAME_THROTTLE_MS);
             while let Some(Ok(msg)) = receiver.next().await {
                 match msg {
                     Message::Binary(data) => {
@@ -139,7 +151,13 @@ impl DashboardBroadcast {
                 force_keyframe,
                 config.tile_size,
             );
-            let encoded = encode_raw_frame(&frame, frame_type, payload, instance_index, config.tile_size);
+            let encoded = encode_raw_frame(
+                &frame,
+                frame_type,
+                payload,
+                instance_index,
+                config.tile_size,
+            );
 
             if frame_type == StreamFrameType::Keyframe {
                 keyframe_cache
@@ -149,8 +167,20 @@ impl DashboardBroadcast {
                 recovery_mode = false;
             }
 
-            match send_binary_with_backpressure(&mut sender, encoded, config.backpressure_limit).await {
+            self.metrics
+                .record_produced(
+                    &instance_id,
+                    encoded.len() as u64,
+                    frame_type == StreamFrameType::Keyframe,
+                )
+                .await;
+            match send_binary_with_backpressure(&mut sender, encoded, config.backpressure_limit)
+                .await
+            {
                 Ok(true) => {
+                    self.metrics
+                        .record_delivery(&instance_id, true, false)
+                        .await;
                     if config.h264_enabled {
                         send_h264_frame(
                             &mut sender,
@@ -164,6 +194,9 @@ impl DashboardBroadcast {
                     prev_frame = Some(frame);
                 }
                 Ok(false) => {
+                    self.metrics
+                        .record_delivery(&instance_id, false, false)
+                        .await;
                     if frame_type == StreamFrameType::Delta {
                         recovery_mode = true;
                     }
@@ -173,7 +206,11 @@ impl DashboardBroadcast {
         }
     }
 
-    pub async fn handle_dashboard_stream(&self, socket: WebSocket, instance_ids: Vec<(String, u8)>) {
+    pub async fn handle_dashboard_stream(
+        &self,
+        socket: WebSocket,
+        instance_ids: Vec<(String, u8)>,
+    ) {
         let (mut sender, mut receiver) = socket.split();
         let keyframe_cache = self.keyframe_cache.clone();
         let config = self.config.clone();
@@ -182,7 +219,13 @@ impl DashboardBroadcast {
             let cache = keyframe_cache.read().await;
             for (id, _) in &instance_ids {
                 if let Some(kf) = cache.get(id) {
-                    match send_binary_with_backpressure(&mut sender, kf.clone(), config.backpressure_limit).await {
+                    match send_binary_with_backpressure(
+                        &mut sender,
+                        kf.clone(),
+                        config.backpressure_limit,
+                    )
+                    .await
+                    {
                         Ok(true) => {}
                         Ok(false) => continue,
                         Err(()) => return,
@@ -204,7 +247,8 @@ impl DashboardBroadcast {
 
         let dashboard_cache = keyframe_cache.clone();
         tokio::spawn(async move {
-            let mut last_keyframe_request = Instant::now() - Duration::from_millis(KEYFRAME_THROTTLE_MS);
+            let mut last_keyframe_request =
+                Instant::now() - Duration::from_millis(KEYFRAME_THROTTLE_MS);
             while let Some(Ok(msg)) = receiver.next().await {
                 let bytes = match msg {
                     Message::Binary(data) => data.to_vec(),
@@ -213,7 +257,8 @@ impl DashboardBroadcast {
                     _ => continue,
                 };
                 if let Ok(ViewerControl::Keyframe) = parse_viewer_control_message(&bytes)
-                    && last_keyframe_request.elapsed() >= Duration::from_millis(KEYFRAME_THROTTLE_MS)
+                    && last_keyframe_request.elapsed()
+                        >= Duration::from_millis(KEYFRAME_THROTTLE_MS)
                 {
                     dashboard_cache.write().await.clear();
                     last_keyframe_request = Instant::now();
@@ -237,8 +282,8 @@ impl DashboardBroadcast {
 
                 let count = frame_counts.entry(id.clone()).or_insert(0);
                 *count = count.wrapping_add(1);
-                let force_keyframe = *count % config.keyframe_interval == 1
-                    || recovery_instances.contains(id);
+                let force_keyframe =
+                    *count % config.keyframe_interval == 1 || recovery_instances.contains(id);
                 let (frame_type, payload) = encode_frame_payload(
                     &frame,
                     prev_frames.get(id),
@@ -248,15 +293,29 @@ impl DashboardBroadcast {
                 let encoded = encode_raw_frame(&frame, frame_type, payload, *idx, config.tile_size);
 
                 if frame_type == StreamFrameType::Keyframe {
-                    keyframe_cache.write().await.insert(id.clone(), encoded.clone());
+                    keyframe_cache
+                        .write()
+                        .await
+                        .insert(id.clone(), encoded.clone());
                     recovery_instances.remove(id);
                 }
 
-                match send_binary_with_backpressure(&mut sender, encoded, config.backpressure_limit).await {
+                self.metrics
+                    .record_produced(
+                        id,
+                        encoded.len() as u64,
+                        frame_type == StreamFrameType::Keyframe,
+                    )
+                    .await;
+                match send_binary_with_backpressure(&mut sender, encoded, config.backpressure_limit)
+                    .await
+                {
                     Ok(true) => {
+                        self.metrics.record_delivery(id, true, true).await;
                         prev_frames.insert(id.clone(), frame);
                     }
                     Ok(false) => {
+                        self.metrics.record_delivery(id, false, true).await;
                         if frame_type == StreamFrameType::Delta {
                             recovery_instances.insert(id.clone());
                         }
@@ -333,7 +392,10 @@ where
         return Ok(false);
     }
 
-    sender.send(Message::Binary(bytes.into())).await.map_err(|_| ())?;
+    sender
+        .send(Message::Binary(bytes.into()))
+        .await
+        .map_err(|_| ())?;
     Ok(true)
 }
 
@@ -451,5 +513,24 @@ mod tests {
         };
         assert!(config.h264_enabled);
         assert_eq!(config.keyframe_interval, 60);
+    }
+
+    #[tokio::test]
+    async fn broadcast_uses_injected_metrics_handle() {
+        let hub = Arc::new(FrameHub::new());
+        let metrics = Arc::new(StreamMetrics::new());
+        let broadcast = DashboardBroadcast::with_config_and_metrics(
+            hub,
+            BroadcastConfig::default(),
+            metrics.clone(),
+        );
+
+        broadcast
+            .metrics()
+            .record_delivery("inst-1", true, false)
+            .await;
+
+        let snapshot = metrics.snapshot().await;
+        assert_eq!(snapshot.instances[0].instance_delivered, 1);
     }
 }

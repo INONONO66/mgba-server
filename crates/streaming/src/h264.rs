@@ -1,8 +1,8 @@
 use crate::frame_hub::{PixelFormat, RawFrame};
 use openh264::{
+    OpenH264API,
     encoder::{Encoder, EncoderConfig},
     formats::YUVBuffer,
-    OpenH264API,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -11,7 +11,9 @@ pub enum H264Error {
     Init(String),
     #[error("unsupported pixel format: {0:?}")]
     UnsupportedPixelFormat(PixelFormat),
-    #[error("frame dimensions mismatch: expected {expected_width}x{expected_height}, got {actual_width}x{actual_height}")]
+    #[error(
+        "frame dimensions mismatch: expected {expected_width}x{expected_height}, got {actual_width}x{actual_height}"
+    )]
     DimensionMismatch {
         expected_width: u32,
         expected_height: u32,
@@ -30,9 +32,7 @@ pub struct H264Encoder {
 
 impl H264Encoder {
     pub fn new(width: u32, height: u32) -> Result<Self, H264Error> {
-        let config = EncoderConfig::new()
-            .set_bitrate_bps(500_000)
-            .debug(false);
+        let config = EncoderConfig::new().set_bitrate_bps(500_000).debug(false);
         let encoder = Encoder::with_api_config(OpenH264API::from_source(), config)
             .map_err(|e| H264Error::Init(e.to_string()))?;
         Ok(Self {
@@ -105,10 +105,8 @@ fn xrgb8888_to_yuv420(data: &[u8], width: u32, height: u32, pitch: u32) -> YuvPl
 
             if row % 2 == 0 && col % 2 == 0 {
                 let uv_idx = (row / 2) * (w / 2) + (col / 2);
-                u[uv_idx] = (-0.169 * r - 0.331 * g + 0.500 * b + 128.0)
-                    .clamp(0.0, 255.0) as u8;
-                v[uv_idx] = (0.500 * r - 0.419 * g - 0.081 * b + 128.0)
-                    .clamp(0.0, 255.0) as u8;
+                u[uv_idx] = (-0.169 * r - 0.331 * g + 0.500 * b + 128.0).clamp(0.0, 255.0) as u8;
+                v[uv_idx] = (0.500 * r - 0.419 * g - 0.081 * b + 128.0).clamp(0.0, 255.0) as u8;
             }
         }
     }
@@ -161,7 +159,10 @@ mod tests {
             let _ = encoder.encode(&frame).expect("encode");
         }
         let avg_ms = start.elapsed().as_millis() as f64 / 10.0;
-        assert!(avg_ms < 5.0, "Average encode time {avg_ms}ms should be < 5ms");
+        assert!(
+            avg_ms < 5.0,
+            "Average encode time {avg_ms}ms should be < 5ms"
+        );
     }
 
     #[test]
