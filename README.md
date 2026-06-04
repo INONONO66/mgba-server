@@ -5,6 +5,7 @@ A high-performance Rust/Axum gateway for running multiple mGBA Game Boy Advance 
 ## Architecture
 
 - **Gateway** (`src/bin/gateway.rs`): Axum HTTP/WebSocket server
+- **Dashboard** (`dashboard/`): separate React/Vite client for `/ws/dashboard`
 - **Worker** (`src/bin/worker.rs`): libretro worker process (one per instance)
 - **IPC**: Unix socket communication between gateway and workers
 - **Streaming**: Binary WebSocket protocol with zlib-compressed tile deltas
@@ -36,6 +37,7 @@ cargo build --release
 
 | Variable | Default | Description |
 |---|---|---|
+| `BIND_HOST` | `127.0.0.1` | HTTP bind host; set explicitly for network exposure |
 | `PORT` | `8787` | HTTP server port |
 | `ADMIN_TOKEN` | `dev-admin-token` | Admin API token |
 | `MAX_INSTANCES` | `20` | Maximum concurrent instances |
@@ -65,6 +67,25 @@ export WORKER_BINARY_PATH=./target/release/worker
 curl http://localhost:8787/health
 # {"ok":true}
 ```
+
+### Start the dashboard
+
+The gateway is API/WebSocket only; it does not embed or serve dashboard HTML. Run the React dashboard as a separate deployable app:
+
+```bash
+cd dashboard
+bun install
+VITE_GATEWAY_URL=http://127.0.0.1:8787 bun run dev
+```
+
+For production:
+
+```bash
+cd dashboard
+VITE_GATEWAY_URL=https://gateway.example.com bun run build
+```
+
+The built files are emitted to `dashboard/dist/` and can be hosted by any static web server. The dashboard connects to the gateway over `/ws/dashboard`.
 
 ## ROM Placement
 
@@ -169,37 +190,29 @@ H.264 frames use `frameType=3` in the binary header. Clients that only handle ty
 
 ## Benchmark
 
+Run sustained-load validation against a release-built Rust gateway with a real
+libretro core and test ROM available to the worker process:
+
 ```bash
-# Start gateway with libretro core
 export ADMIN_TOKEN=your-token
 export LIBRETRO_CORE_PATH=/path/to/mgba_libretro.so
+export ROM_PATH=/path/to/test.gba
 export WORKER_BINARY_PATH=./target/release/worker
-./target/release/gateway &
-GATEWAY_PID=$!
-
-# Run the headless benchmark runner
-# (requires Node.js; runs against the Rust gateway over HTTP/WebSocket)
-pnpm run benchmark:headless -- \
-  --base-url http://127.0.0.1:8787 \
-  --admin-token "$ADMIN_TOKEN" \
-  --instances 20 \
-  --duration-ms 60000 \
-  --gateway-pid "$GATEWAY_PID" \
-  --output benchmark-report.json \
-  --summary-output benchmark-summary.txt
+./target/release/gateway
 ```
 
-Useful options:
+Strict benchmark evidence must use the production HTTP/WebSocket paths and a
+real ROM-backed instance set. Local compatibility checks without
+`LIBRETRO_CORE_PATH` and `ROM_PATH` do not prove the 20-instance sustained
+performance target.
 
-- `--instances N` — up to 20; strict acceptance requires exactly 20
-- `--duration-ms N` — strict acceptance requires 60000 or higher
-- `--warmup-ms N` — discard initial samples before the measured window
-- `--late-frame-threshold-ms N` — late/drop threshold (default: 1.5x a 60fps interval)
-- `--no-create` — require existing running instances instead of creating them
-- `--cleanup-created` — destroy benchmark-created instances on exit
-- `--allow-reduced-target` — non-strict mode for local/dev runs
+Strict acceptance settings:
 
-The command exits non-zero when any target is missed.
+- Use exactly 20 instances for the measured run.
+- Measure for at least 60000 ms after any warmup period.
+- Count late frames and sequence gaps against the dropped/late-frame target.
+- Treat reduced-target or compatibility-only runs as local development checks,
+  not strict performance evidence.
 
 ## Testing
 
