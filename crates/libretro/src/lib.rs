@@ -107,8 +107,9 @@ impl LibretroCore {
                 // SAFETY: We are resolving a symbol from a loaded library. The symbol name
                 // and type are the required signatures from the libretro API specification.
                 let symbol: libloading::Symbol<'_, $ty> = unsafe {
-                    lib.get($name)
-                        .map_err(|_| LibretroError::Symbol { name: $display_name })?
+                    lib.get($name).map_err(|_| LibretroError::Symbol {
+                        name: $display_name,
+                    })?
                 };
                 *symbol
             }};

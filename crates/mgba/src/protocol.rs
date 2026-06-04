@@ -23,7 +23,10 @@ mod tests {
     #[test]
     fn format_message_without_args() {
         let no_args: &[&str] = &[];
-        assert_eq!(format_message("core.currentFrame", no_args), "core.currentFrame<|END|>");
+        assert_eq!(
+            format_message("core.currentFrame", no_args),
+            "core.currentFrame<|END|>"
+        );
     }
 
     #[test]

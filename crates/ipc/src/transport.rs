@@ -41,7 +41,10 @@ where
     R: AsyncReadExt + Unpin,
     T: serde::de::DeserializeOwned,
 {
-    let len = reader.read_u32().await.map_err(|_| TransportError::Closed)?;
+    let len = reader
+        .read_u32()
+        .await
+        .map_err(|_| TransportError::Closed)?;
     if len > MAX_FRAME_SIZE {
         return Err(TransportError::FrameTooLarge(len));
     }
@@ -264,7 +267,10 @@ mod tests {
             .call(WorkerCommand::V1(WorkerCommandV1::Ping))
             .await
             .unwrap();
-        assert!(matches!(response, WorkerResponse::V1(WorkerResponseV1::Pong)));
+        assert!(matches!(
+            response,
+            WorkerResponse::V1(WorkerResponseV1::Pong)
+        ));
 
         server_task.await.unwrap();
     }

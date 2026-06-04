@@ -32,13 +32,11 @@ impl MgbaTransport for IpcTransport {
             .ok_or_else(|| SchedulerError::Transport(format!("unknown command: {message}")))?;
 
         let mut client = self.client.lock().await;
-        let response = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            client.call(command),
-        )
-        .await
-        .map_err(|_| SchedulerError::Timeout)?
-        .map_err(|e| SchedulerError::Transport(e.to_string()))?;
+        let response =
+            tokio::time::timeout(std::time::Duration::from_secs(5), client.call(command))
+                .await
+                .map_err(|_| SchedulerError::Timeout)?
+                .map_err(|e| SchedulerError::Transport(e.to_string()))?;
 
         Ok(response_to_string(response))
     }
@@ -318,8 +316,9 @@ mod tests {
 
     #[test]
     fn memory_data_two_byte_response_decodes_le() {
-        let response =
-            WorkerResponse::V1(WorkerResponseV1::MemoryData { data: vec![0x34, 0x12] });
+        let response = WorkerResponse::V1(WorkerResponseV1::MemoryData {
+            data: vec![0x34, 0x12],
+        });
         let s = response_to_string(response);
         assert!(s.contains("4660"));
     }
@@ -345,8 +344,9 @@ mod tests {
 
     #[test]
     fn current_frame_response_contains_frame_number() {
-        let response =
-            WorkerResponse::V1(WorkerResponseV1::CurrentFrame { frame_number: 12345 });
+        let response = WorkerResponse::V1(WorkerResponseV1::CurrentFrame {
+            frame_number: 12345,
+        });
         let s = response_to_string(response);
         assert!(s.contains("12345"));
     }
