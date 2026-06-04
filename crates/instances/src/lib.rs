@@ -4,6 +4,7 @@ use grokemon_config::GatewayConfig;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
+    path::Path,
     sync::{Arc, Mutex as StdMutex},
     time::Duration,
 };
@@ -30,6 +31,7 @@ pub struct InstanceInfo {
     pub principal_session_id: String,
     pub pid: u32,
     pub socket_path: String,
+    pub frame_socket_path: String,
     pub principal_token: String,
     pub created_at: DateTime<Utc>,
     pub status: InstanceStatus,
@@ -39,6 +41,7 @@ pub struct InstanceInfo {
 pub struct CreateInstanceOptions {
     pub instance_id: String,
     pub socket_path: String,
+    pub frame_socket_path: String,
     pub core_path: String,
     pub rom_path: Option<String>,
 }
@@ -47,6 +50,7 @@ pub struct CreateInstanceOptions {
 pub struct WorkerInfo {
     pub pid: u32,
     pub socket_path: String,
+    pub frame_socket_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,11 +129,19 @@ impl<B: InstanceBackend> InstanceManager<B> {
             *pending += 1;
         }
         let instance_id = Uuid::new_v4().to_string();
+        let socket_dir = Path::new(&self.config.worker_socket_dir);
         let worker = match self
             .backend
             .create_instance(CreateInstanceOptions {
                 instance_id: instance_id.clone(),
-                socket_path: format!("{}/{}.sock", self.config.worker_socket_dir, instance_id),
+                socket_path: socket_dir
+                    .join(format!("mgba-{instance_id}.cmd.sock"))
+                    .to_string_lossy()
+                    .into_owned(),
+                frame_socket_path: socket_dir
+                    .join(format!("mgba-{instance_id}.frames.sock"))
+                    .to_string_lossy()
+                    .into_owned(),
                 core_path: self.config.libretro_core_path.clone(),
                 rom_path: self.config.rom_path.clone(),
             })
@@ -147,6 +159,7 @@ impl<B: InstanceBackend> InstanceManager<B> {
             principal_session_id: session_id.into(),
             pid: worker.pid,
             socket_path: worker.socket_path,
+            frame_socket_path: worker.frame_socket_path,
             principal_token: Uuid::new_v4().to_string(),
             created_at: Utc::now(),
             status: InstanceStatus::Running,
@@ -172,6 +185,25 @@ impl<B: InstanceBackend> InstanceManager<B> {
         Ok(())
     }
 
+    pub async fn destroy_all(&self) -> Result<(), InstanceError> {
+        let ids: Vec<String> = self.instances.read().await.keys().cloned().collect();
+        let mut first_error = None;
+
+        for id in ids {
+            if let Err(error) = self.destroy(&id).await
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+
+        Ok(())
+    }
+
     pub async fn list(&self) -> Vec<InstanceInfo> {
         self.instances.read().await.values().cloned().collect()
     }
@@ -181,35 +213,22 @@ impl<B: InstanceBackend> InstanceManager<B> {
     }
 
     pub async fn reconstruct(&self) -> Result<(), InstanceError> {
-        let _ = self.backend.list_managed_instances().await?;
+        let managed = self.backend.list_managed_instances().await?;
+        for worker in managed {
+            self.backend.stop_instance(&worker.instance_id).await?;
+        }
+        self.instances.write().await.clear();
         Ok(())
     }
 
     pub fn start_health_checks(&self) {
-        let instances = self.instances.clone();
+        let manager = self.clone();
         let interval_secs = 10u64;
 
         let handle = tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(interval_secs)).await;
-
-                let instance_list: Vec<(String, String)> = {
-                    let map = instances.read().await;
-                    map.values()
-                        .filter(|i| i.status == InstanceStatus::Running)
-                        .map(|i| (i.id.clone(), i.socket_path.clone()))
-                        .collect()
-                };
-
-                for (id, socket_path) in instance_list {
-                    let is_alive = check_worker_alive(&socket_path).await;
-                    if !is_alive {
-                        let mut map = instances.write().await;
-                        if let Some(info) = map.get_mut(&id) {
-                            info.status = InstanceStatus::Error;
-                        }
-                    }
-                }
+                let _ = manager.refresh_health_once().await;
             }
         });
 
@@ -227,6 +246,26 @@ impl<B: InstanceBackend> InstanceManager<B> {
         if let Some(info) = map.get_mut(instance_id) {
             info.status = InstanceStatus::Error;
         }
+    }
+
+    pub async fn refresh_health_once(&self) -> Result<(), InstanceError> {
+        let instance_list: Vec<(String, String)> = {
+            let map = self.instances.read().await;
+            map.values()
+                .filter(|info| info.status == InstanceStatus::Running)
+                .map(|info| (info.id.clone(), info.socket_path.clone()))
+                .collect()
+        };
+
+        for (id, socket_path) in instance_list {
+            let process_alive = self.backend.inspect_running(&id).await?;
+            let socket_alive = process_alive && check_worker_alive(&socket_path).await;
+            if !process_alive || !socket_alive {
+                self.mark_error(&id).await;
+            }
+        }
+
+        Ok(())
     }
 
     pub async fn cleanup_stale_sockets(&self) {
@@ -263,6 +302,7 @@ async fn check_worker_alive(socket_path: &str) -> bool {
 struct ManagedChild {
     child: Child,
     socket_path: String,
+    frame_socket_path: String,
 }
 
 pub struct ProcessBackend {
@@ -296,6 +336,8 @@ impl InstanceBackend for ProcessBackend {
         let mut cmd = Command::new(&self.worker_binary_path);
         cmd.arg("--socket")
             .arg(&opts.socket_path)
+            .arg("--frame-socket")
+            .arg(&opts.frame_socket_path)
             .arg("--core")
             .arg(&opts.core_path);
         if let Some(rom) = &opts.rom_path {
@@ -342,12 +384,14 @@ impl InstanceBackend for ProcessBackend {
             ManagedChild {
                 child,
                 socket_path: opts.socket_path.clone(),
+                frame_socket_path: opts.frame_socket_path.clone(),
             },
         );
 
         Ok(WorkerInfo {
             pid,
             socket_path: opts.socket_path,
+            frame_socket_path: opts.frame_socket_path,
         })
     }
 
@@ -360,6 +404,7 @@ impl InstanceBackend for ProcessBackend {
         if let Some(ManagedChild {
             mut child,
             socket_path,
+            frame_socket_path,
         }) = entry
         {
             let pid = child.id().unwrap_or(0);
@@ -389,6 +434,7 @@ impl InstanceBackend for ProcessBackend {
             }
 
             let _ = tokio::fs::remove_file(&socket_path).await;
+            let _ = tokio::fs::remove_file(&frame_socket_path).await;
         }
         Ok(())
     }
@@ -408,11 +454,29 @@ impl InstanceBackend for ProcessBackend {
     async fn inspect_running(&self, instance_id: &str) -> Result<bool, InstanceError> {
         let children = self.children.read().await;
         if let Some(managed) = children.get(instance_id) {
-            Ok(managed.child.id().is_some())
+            Ok(managed.child.id().is_some_and(pid_is_running))
         } else {
             Ok(false)
         }
     }
+}
+
+#[cfg(unix)]
+fn pid_is_running(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+
+    // SAFETY: kill with signal 0 does not deliver a signal. It only asks the
+    // kernel whether this process may signal the PID, which is the Unix
+    // liveness probe needed here.
+    let result = unsafe { libc::kill(pid, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+fn pid_is_running(_pid: u32) -> bool {
+    true
 }
 
 pub async fn health_check_interval() -> Duration {
@@ -428,6 +492,8 @@ mod tests {
     struct FakeBackend {
         created: Mutex<Vec<CreateInstanceOptions>>,
         fail_stop: Mutex<bool>,
+        running: Mutex<HashMap<String, bool>>,
+        managed: Mutex<Vec<ManagedInstanceInfo>>,
         stopped: Mutex<Vec<String>>,
     }
 
@@ -438,10 +504,20 @@ mod tests {
             opts: CreateInstanceOptions,
         ) -> Result<WorkerInfo, InstanceError> {
             self.created.lock().unwrap().push(opts.clone());
+            self.running
+                .lock()
+                .unwrap()
+                .insert(opts.instance_id.clone(), true);
+            self.managed.lock().unwrap().push(ManagedInstanceInfo {
+                instance_id: opts.instance_id.clone(),
+                pid: 42,
+                socket_path: opts.socket_path.clone(),
+            });
             tokio::time::sleep(Duration::from_millis(5)).await;
             Ok(WorkerInfo {
                 pid: 42,
                 socket_path: opts.socket_path,
+                frame_socket_path: opts.frame_socket_path,
             })
         }
         async fn stop_instance(&self, instance_id: &str) -> Result<(), InstanceError> {
@@ -449,13 +525,19 @@ mod tests {
                 return Err(InstanceError::Backend("stop failed".to_string()));
             }
             self.stopped.lock().unwrap().push(instance_id.to_string());
+            self.running.lock().unwrap().remove(instance_id);
             Ok(())
         }
         async fn list_managed_instances(&self) -> Result<Vec<ManagedInstanceInfo>, InstanceError> {
-            Ok(Vec::new())
+            Ok(self.managed.lock().unwrap().clone())
         }
-        async fn inspect_running(&self, _instance_id: &str) -> Result<bool, InstanceError> {
-            Ok(true)
+        async fn inspect_running(&self, instance_id: &str) -> Result<bool, InstanceError> {
+            Ok(*self
+                .running
+                .lock()
+                .unwrap()
+                .get(instance_id)
+                .unwrap_or(&false))
         }
     }
 
@@ -477,6 +559,66 @@ mod tests {
         manager.destroy(&info.id).await.unwrap();
         assert!(manager.list().await.is_empty());
         assert_eq!(backend.stopped.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn destroy_all_stops_every_tracked_instance() {
+        let backend = Arc::new(FakeBackend::default());
+        let manager = InstanceManager::new(
+            GatewayConfig {
+                max_instances: 20,
+                libretro_core_path: "/tmp/core.so".to_string(),
+                worker_socket_dir: "/tmp/grokemon-workers".to_string(),
+                ..GatewayConfig::default()
+            },
+            backend.clone(),
+        );
+        let first = manager.create("session-a").await.unwrap();
+        let second = manager.create("session-b").await.unwrap();
+
+        manager.destroy_all().await.unwrap();
+
+        assert!(manager.list().await.is_empty());
+        let stopped = backend.stopped.lock().unwrap().clone();
+        assert!(stopped.contains(&first.id));
+        assert!(stopped.contains(&second.id));
+    }
+
+    #[tokio::test]
+    async fn create_uses_mgba_prefixed_socket_path_under_worker_socket_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let worker_socket_dir = tmp.path().to_string_lossy().into_owned();
+        let backend = Arc::new(FakeBackend::default());
+        let manager = InstanceManager::new(
+            GatewayConfig {
+                max_instances: 20,
+                libretro_core_path: "/tmp/core.so".to_string(),
+                worker_socket_dir: worker_socket_dir.clone(),
+                ..GatewayConfig::default()
+            },
+            backend.clone(),
+        );
+
+        let info = manager.create("session-a").await.unwrap();
+
+        let created = backend.created.lock().unwrap();
+        let opts = created.first().unwrap();
+        let expected_socket_path = tmp
+            .path()
+            .join(format!("mgba-{}.cmd.sock", info.id))
+            .to_string_lossy()
+            .into_owned();
+        let expected_frame_socket_path = tmp
+            .path()
+            .join(format!("mgba-{}.frames.sock", info.id))
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(opts.socket_path, expected_socket_path);
+        assert_eq!(info.socket_path, expected_socket_path);
+        assert_eq!(opts.frame_socket_path, expected_frame_socket_path);
+        assert_eq!(info.frame_socket_path, expected_frame_socket_path);
+        assert!(opts.socket_path.starts_with(&worker_socket_dir));
+        assert!(opts.frame_socket_path.starts_with(&worker_socket_dir));
     }
 
     #[tokio::test]
@@ -560,6 +702,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refresh_health_once_marks_exited_worker_as_error() {
+        let backend = Arc::new(FakeBackend::default());
+        let manager = InstanceManager::new(
+            GatewayConfig {
+                libretro_core_path: "/tmp/core.so".to_string(),
+                worker_socket_dir: "/tmp/test-workers".to_string(),
+                ..GatewayConfig::default()
+            },
+            backend.clone(),
+        );
+        let info = manager.create("session-health").await.unwrap();
+        backend
+            .running
+            .lock()
+            .unwrap()
+            .insert(info.id.clone(), false);
+
+        manager.refresh_health_once().await.unwrap();
+
+        let updated = manager.get(&info.id).await.unwrap();
+        assert_eq!(updated.status, InstanceStatus::Error);
+    }
+
+    #[tokio::test]
+    async fn reconstruct_stops_managed_workers_and_clears_instances() {
+        let backend = Arc::new(FakeBackend::default());
+        let manager = InstanceManager::new(
+            GatewayConfig {
+                libretro_core_path: "/tmp/core.so".to_string(),
+                worker_socket_dir: "/tmp/test-workers".to_string(),
+                ..GatewayConfig::default()
+            },
+            backend.clone(),
+        );
+        let info = manager.create("session-reconstruct").await.unwrap();
+
+        manager.reconstruct().await.unwrap();
+
+        assert!(manager.list().await.is_empty());
+        assert_eq!(backend.stopped.lock().unwrap().as_slice(), &[info.id]);
+    }
+
+    #[tokio::test]
     async fn start_stop_health_checks() {
         let backend = Arc::new(FakeBackend::default());
         let manager = InstanceManager::new(GatewayConfig::default(), backend);
@@ -611,6 +796,74 @@ mod tests {
             assert_eq!(backend.worker_socket_dir, "/tmp/test-mgba-workers");
             assert_eq!(backend.shutdown_timeout_ms, 1000);
             assert!(backend.children.read().await.is_empty());
+        }
+
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn inspect_running_returns_false_when_tracked_pid_is_reaped() {
+            let config = GatewayConfig {
+                worker_socket_dir: "/tmp/test-mgba-workers".to_string(),
+                ..GatewayConfig::default()
+            };
+            let backend = ProcessBackend::new(&config);
+            let child = Command::new("sleep").arg("60").spawn().unwrap();
+            let pid = child.id().unwrap();
+
+            backend.children.write().await.insert(
+                "reaped".to_string(),
+                ManagedChild {
+                    child,
+                    socket_path: "/tmp/test-mgba-workers/reaped.sock".to_string(),
+                    frame_socket_path: "/tmp/test-mgba-workers/reaped.frames.sock".to_string(),
+                },
+            );
+
+            let pid = libc::pid_t::try_from(pid).unwrap();
+            // SAFETY: the test owns this child process. SIGTERM requests termination,
+            // and waitpid reaps that exact child PID before inspecting backend state.
+            unsafe {
+                assert_eq!(libc::kill(pid, libc::SIGTERM), 0);
+                let mut status = 0;
+                assert_eq!(libc::waitpid(pid, &mut status, 0), pid);
+            }
+
+            assert!(!backend.inspect_running("reaped").await.unwrap());
+        }
+
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn stop_instance_removes_command_and_frame_sockets() {
+            let dir = tempfile::tempdir().unwrap();
+            let socket_path = dir.path().join("worker.cmd.sock");
+            let frame_socket_path = dir.path().join("worker.frames.sock");
+            tokio::fs::write(&socket_path, b"stale command socket")
+                .await
+                .unwrap();
+            tokio::fs::write(&frame_socket_path, b"stale frame socket")
+                .await
+                .unwrap();
+
+            let config = GatewayConfig {
+                worker_socket_dir: dir.path().to_string_lossy().into_owned(),
+                worker_shutdown_timeout_ms: 1000,
+                ..GatewayConfig::default()
+            };
+            let backend = ProcessBackend::new(&config);
+            let child = Command::new("sleep").arg("60").spawn().unwrap();
+
+            backend.children.write().await.insert(
+                "instance-a".to_string(),
+                ManagedChild {
+                    child,
+                    socket_path: socket_path.to_string_lossy().into_owned(),
+                    frame_socket_path: frame_socket_path.to_string_lossy().into_owned(),
+                },
+            );
+
+            backend.stop_instance("instance-a").await.unwrap();
+
+            assert!(!tokio::fs::try_exists(&socket_path).await.unwrap());
+            assert!(!tokio::fs::try_exists(&frame_socket_path).await.unwrap());
         }
 
         #[tokio::test]

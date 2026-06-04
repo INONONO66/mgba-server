@@ -3,6 +3,7 @@ use std::{env, num::ParseIntError};
 use thiserror::Error;
 
 const DEFAULT_PORT: u16 = 8787;
+const DEFAULT_BIND_HOST: &str = "127.0.0.1";
 const DEFAULT_MAX_INSTANCES: u16 = 20;
 const DEFAULT_EMULATOR_PORT: u16 = 8888;
 const DEFAULT_EMULATOR_MEMORY_BYTES: u64 = 768 * 1024 * 1024;
@@ -14,6 +15,7 @@ const DEFAULT_WS_BACKPRESSURE_LIMIT: usize = 262_144;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GatewayConfig {
+    pub bind_host: String,
     pub port: u16,
     pub admin_token: String,
     pub max_instances: u16,
@@ -38,6 +40,7 @@ pub struct GatewayConfig {
 impl Default for GatewayConfig {
     fn default() -> Self {
         Self {
+            bind_host: DEFAULT_BIND_HOST.to_string(),
             port: DEFAULT_PORT,
             admin_token: "dev-admin-token".to_string(),
             max_instances: DEFAULT_MAX_INSTANCES,
@@ -79,6 +82,7 @@ pub enum ConfigError {
 pub fn load_from_env() -> Result<GatewayConfig, ConfigError> {
     let defaults = GatewayConfig::default();
     Ok(GatewayConfig {
+        bind_host: read_string("BIND_HOST", defaults.bind_host)?,
         port: read_u16("PORT", defaults.port, 1, u16::MAX)?,
         admin_token: read_string("ADMIN_TOKEN", defaults.admin_token)?,
         max_instances: read_u16("MAX_INSTANCES", defaults.max_instances, 1, 20)?,
@@ -226,8 +230,10 @@ mod tests {
         unsafe {
             env::remove_var("MAX_INSTANCES");
             env::remove_var("ADMIN_TOKEN");
+            env::remove_var("BIND_HOST");
         }
         let config = load_from_env().unwrap();
+        assert_eq!(config.bind_host, "127.0.0.1");
         assert_eq!(config.max_instances, 20);
         assert_eq!(config.admin_token, "dev-admin-token");
     }
@@ -259,6 +265,7 @@ mod tests {
         // SAFETY: test-only, single-threaded test environment
         unsafe {
             env::set_var("WORKER_BINARY_PATH", "/tmp/worker");
+            env::set_var("BIND_HOST", "0.0.0.0");
             env::set_var("LIBRETRO_CORE_PATH", "");
             env::set_var("WORKER_SOCKET_DIR", "/tmp/workers");
             env::set_var("WORKER_SHUTDOWN_TIMEOUT_MS", "2500");
@@ -270,12 +277,14 @@ mod tests {
         // SAFETY: test-only, single-threaded test environment
         unsafe {
             env::remove_var("WORKER_BINARY_PATH");
+            env::remove_var("BIND_HOST");
             env::remove_var("LIBRETRO_CORE_PATH");
             env::remove_var("WORKER_SOCKET_DIR");
             env::remove_var("WORKER_SHUTDOWN_TIMEOUT_MS");
             env::remove_var("H264_ENABLED");
         }
 
+        assert_eq!(config.bind_host, "0.0.0.0");
         assert_eq!(config.worker_binary_path, "/tmp/worker");
         assert_eq!(config.libretro_core_path, "");
         assert_eq!(config.worker_socket_dir, "/tmp/workers");
