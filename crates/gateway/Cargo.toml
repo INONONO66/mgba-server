@@ -11,6 +11,7 @@ axum.workspace = true
 grokemon-auth = { path = "../auth" }
 grokemon-config = { path = "../config" }
 grokemon-instances = { path = "../instances" }
+grokemon-ipc = { path = "../ipc" }
 grokemon-mgba = { path = "../mgba" }
 grokemon-streaming = { path = "../streaming" }
 http.workspace = true
@@ -22,4 +23,5 @@ tower.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 tower.workspace = true

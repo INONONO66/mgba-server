@@ -5,14 +5,20 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{delete, get, post},
 };
+use grokemon_auth::{AclService, PrincipalId, Role, SessionId};
 use grokemon_instances::{InstanceBackend, InstanceError, InstanceManager};
-use grokemon_streaming::StreamMetrics;
-use std::sync::Arc;
+use grokemon_ipc::transport::{FrameConnection, RawFramePacket};
+use grokemon_streaming::{FrameHub, PixelFormat, RawFrame, StreamMetrics};
+use std::{collections::HashMap, sync::Arc, time::Duration};
+use tokio::{sync::RwLock, task::JoinHandle};
 
 pub struct AdminState<B: InstanceBackend> {
     pub admin_token: String,
     pub manager: Arc<InstanceManager<B>>,
     pub stream_metrics: Arc<StreamMetrics>,
+    pub acl: Arc<RwLock<AclService>>,
+    pub frame_hub: Arc<FrameHub>,
+    frame_ingest_tasks: Arc<RwLock<HashMap<String, JoinHandle<()>>>>,
 }
 
 impl<B: InstanceBackend> Clone for AdminState<B> {
@@ -21,6 +27,9 @@ impl<B: InstanceBackend> Clone for AdminState<B> {
             admin_token: self.admin_token.clone(),
             manager: self.manager.clone(),
             stream_metrics: self.stream_metrics.clone(),
+            acl: self.acl.clone(),
+            frame_hub: self.frame_hub.clone(),
+            frame_ingest_tasks: self.frame_ingest_tasks.clone(),
         }
     }
 }
@@ -30,11 +39,16 @@ impl<B: InstanceBackend> AdminState<B> {
         admin_token: impl Into<String>,
         manager: Arc<InstanceManager<B>>,
         stream_metrics: Arc<StreamMetrics>,
+        acl: Arc<RwLock<AclService>>,
+        frame_hub: Arc<FrameHub>,
     ) -> Self {
         Self {
             admin_token: admin_token.into(),
             manager,
             stream_metrics,
+            acl,
+            frame_hub,
+            frame_ingest_tasks: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
@@ -73,7 +87,31 @@ async fn create_instance<B: InstanceBackend>(
     }
     let session_id = uuid::Uuid::new_v4().to_string();
     match state.manager.create(session_id).await {
-        Ok(info) => (StatusCode::OK, Json(info)).into_response(),
+        Ok(info) => {
+            let principal_id = PrincipalId::new(&info.principal_session_id);
+            let mut acl = state.acl.write().await;
+            acl.register_principal_token(principal_id.clone(), &info.principal_token);
+            acl.grant(
+                principal_id,
+                SessionId::new(&info.principal_session_id),
+                Role::Owner,
+            );
+            state
+                .frame_hub
+                .register_instance(info.principal_session_id.clone())
+                .await;
+            let handle = spawn_frame_ingest(
+                info.principal_session_id.clone(),
+                info.frame_socket_path.clone(),
+                state.frame_hub.clone(),
+            );
+            state
+                .frame_ingest_tasks
+                .write()
+                .await
+                .insert(info.id.clone(), handle);
+            (StatusCode::OK, Json(info)).into_response()
+        }
         Err(InstanceError::MaxInstancesReached) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({ "error": "max instances reached" })),
@@ -124,8 +162,21 @@ async fn destroy_instance<B: InstanceBackend>(
     if !check_admin_token(&headers, &state.admin_token) {
         return unauthorized();
     }
+    let session_id = state
+        .manager
+        .get(&id)
+        .await
+        .map(|info| info.principal_session_id);
     match state.manager.destroy(&id).await {
-        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response(),
+        Ok(()) => {
+            if let Some(handle) = state.frame_ingest_tasks.write().await.remove(&id) {
+                handle.abort();
+            }
+            if let Some(session_id) = session_id {
+                state.frame_hub.unregister_instance(&session_id).await;
+            }
+            (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response()
+        }
         Err(InstanceError::NotFound) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": "not found" })),
@@ -150,6 +201,45 @@ async fn stream_metrics<B: InstanceBackend>(
     (StatusCode::OK, Json(snapshot)).into_response()
 }
 
+fn spawn_frame_ingest(
+    session_id: String,
+    frame_socket_path: String,
+    frame_hub: Arc<FrameHub>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        for _ in 0..100 {
+            match FrameConnection::connect(&frame_socket_path).await {
+                Ok(mut connection) => {
+                    while let Ok(packet) = connection.recv_frame().await {
+                        if let Some(frame) = frame_from_packet(packet) {
+                            frame_hub.push_frame(&session_id, frame).await;
+                        }
+                    }
+                    return;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+    })
+}
+
+fn frame_from_packet(packet: RawFramePacket) -> Option<RawFrame> {
+    let pixel_format = match packet.pixel_format {
+        0 => PixelFormat::XRGB8888,
+        1 => PixelFormat::RGB565,
+        _ => return None,
+    };
+    Some(RawFrame {
+        width: packet.width,
+        height: packet.height,
+        pitch: packet.pitch,
+        pixel_format,
+        data: packet.data,
+        sequence: 0,
+        timestamp_ms: 0,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,6 +250,7 @@ mod tests {
         CreateInstanceOptions, InstanceBackend, InstanceError, InstanceManager,
         ManagedInstanceInfo, WorkerInfo,
     };
+    use grokemon_ipc::transport::{FrameSocketServer, RawFramePacket};
     use tower::ServiceExt;
 
     #[derive(Default)]
@@ -174,6 +265,7 @@ mod tests {
             Ok(WorkerInfo {
                 pid: 42,
                 socket_path: opts.socket_path,
+                frame_socket_path: opts.frame_socket_path,
             })
         }
         async fn stop_instance(&self, _instance_id: &str) -> Result<(), InstanceError> {
@@ -200,8 +292,10 @@ mod tests {
             ..GatewayConfig::default()
         };
         let manager = Arc::new(InstanceManager::new(config, Arc::new(FakeBackend)));
+        let acl = Arc::new(RwLock::new(AclService::new()));
         let stream_metrics = Arc::new(StreamMetrics::new());
-        let state = AdminState::new("test-token", manager, stream_metrics);
+        let frame_hub = Arc::new(FrameHub::new());
+        let state = AdminState::new("test-token", manager, stream_metrics, acl, frame_hub);
         let admin = admin_routes::<FakeBackend>().with_state(state);
         let app = Router::new().nest("/admin", admin);
         (app, "test-token".to_string())
@@ -212,6 +306,53 @@ mod tests {
             .await
             .unwrap();
         String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn frame_ingest_pushes_socket_frames_into_hub() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir
+            .path()
+            .join("frames.sock")
+            .to_string_lossy()
+            .into_owned();
+        let server = FrameSocketServer::bind(&socket_path).unwrap();
+        let frame_hub = Arc::new(FrameHub::new());
+        frame_hub.register_instance("session-a").await;
+        let ingest = spawn_frame_ingest("session-a".to_string(), socket_path, frame_hub.clone());
+
+        let server_task = tokio::spawn(async move {
+            let mut connection = server.accept().await.unwrap();
+            connection
+                .send_frame(&RawFramePacket {
+                    width: 2,
+                    height: 1,
+                    pitch: 8,
+                    pixel_format: 0,
+                    data: vec![1, 2, 3, 4, 5, 6, 7, 8],
+                })
+                .await
+                .unwrap();
+        });
+
+        let mut received = None;
+        for _ in 0..20 {
+            received = frame_hub.latest_frame("session-a").await;
+            if received.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        ingest.abort();
+        server_task.await.unwrap();
+        let frame = received.unwrap();
+        assert_eq!(frame.width, 2);
+        assert_eq!(frame.height, 1);
+        assert_eq!(frame.pitch, 8);
+        assert_eq!(frame.pixel_format, PixelFormat::XRGB8888);
+        assert_eq!(frame.data, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(frame.sequence, 1);
     }
 
     #[tokio::test]

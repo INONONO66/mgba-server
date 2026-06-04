@@ -18,12 +18,17 @@ use axum::{Router, body::Body};
 use grokemon_auth::AclService;
 use grokemon_config::GatewayConfig;
 use grokemon_gateway::{
-    GatewayState, SessionCommandService, app,
+    GatewayState, SessionCommandService,
     admin::{AdminState, admin_routes},
+    app,
 };
-use grokemon_instances::{InstanceManager, ProcessBackend};
+use grokemon_instances::{
+    CreateInstanceOptions, InstanceBackend, InstanceError, InstanceManager, ManagedInstanceInfo,
+    ProcessBackend, WorkerInfo,
+};
 use grokemon_streaming::{FrameHub, InputLogBus, StreamMetrics};
 use http::StatusCode;
+use tokio::sync::RwLock;
 use tower::ServiceExt;
 
 const TEST_ADMIN_TOKEN: &str = "test-admin-token";
@@ -69,26 +74,97 @@ impl SessionCommandService for StubCommands {
     }
 }
 
+#[derive(Default)]
+struct FakeBackend;
+
+#[async_trait::async_trait]
+impl InstanceBackend for FakeBackend {
+    async fn create_instance(
+        &self,
+        opts: CreateInstanceOptions,
+    ) -> Result<WorkerInfo, InstanceError> {
+        Ok(WorkerInfo {
+            pid: 42,
+            socket_path: opts.socket_path,
+            frame_socket_path: opts.frame_socket_path,
+        })
+    }
+
+    async fn stop_instance(&self, _instance_id: &str) -> Result<(), InstanceError> {
+        Ok(())
+    }
+
+    async fn list_managed_instances(&self) -> Result<Vec<ManagedInstanceInfo>, InstanceError> {
+        Ok(Vec::new())
+    }
+
+    async fn inspect_running(&self, _instance_id: &str) -> Result<bool, InstanceError> {
+        Ok(true)
+    }
+}
+
 fn make_test_app() -> (Router, Arc<InstanceManager<ProcessBackend>>) {
     let config = make_test_config();
-    let acl = AclService::new();
+    let acl = Arc::new(RwLock::new(AclService::new()));
     let backend = Arc::new(ProcessBackend::new(&config));
     let manager = Arc::new(InstanceManager::new(config, backend));
     let frame_hub = Arc::new(FrameHub::new());
     let input_log = Arc::new(InputLogBus::new());
     let stream_metrics = Arc::new(StreamMetrics::new());
 
-    let session_state = GatewayState::new(acl, Arc::new(StubCommands), frame_hub, input_log);
-    let admin_state = AdminState {
-        admin_token: TEST_ADMIN_TOKEN.to_string(),
-        manager: manager.clone(),
+    let session_state = GatewayState::with_acl(
+        acl.clone(),
+        Arc::new(StubCommands),
+        frame_hub.clone(),
+        input_log,
+    );
+    let admin_state = AdminState::new(
+        TEST_ADMIN_TOKEN.to_string(),
+        manager.clone(),
         stream_metrics,
-    };
+        acl,
+        frame_hub,
+    );
 
-    let router = app(session_state)
-        .nest("/admin", admin_routes::<ProcessBackend>().with_state(admin_state));
+    let router = app(session_state).nest(
+        "/admin",
+        admin_routes::<ProcessBackend>().with_state(admin_state),
+    );
 
     (router, manager)
+}
+
+fn make_fake_command_app() -> Router {
+    let config = GatewayConfig {
+        admin_token: TEST_ADMIN_TOKEN.to_string(),
+        worker_socket_dir: "/tmp/test-mgba-fake-workers".to_string(),
+        libretro_core_path: "/tmp/core.so".to_string(),
+        ..GatewayConfig::default()
+    };
+    let acl = Arc::new(RwLock::new(AclService::new()));
+    let manager = Arc::new(InstanceManager::new(config, Arc::new(FakeBackend)));
+    let frame_hub = Arc::new(FrameHub::new());
+    let input_log = Arc::new(InputLogBus::new());
+    let stream_metrics = Arc::new(StreamMetrics::new());
+
+    let session_state = GatewayState::with_acl(
+        acl.clone(),
+        Arc::new(StubCommands),
+        frame_hub.clone(),
+        input_log,
+    );
+    let admin_state = AdminState::new(
+        TEST_ADMIN_TOKEN.to_string(),
+        manager,
+        stream_metrics,
+        acl,
+        frame_hub,
+    );
+
+    app(session_state).nest(
+        "/admin",
+        admin_routes::<FakeBackend>().with_state(admin_state),
+    )
 }
 
 #[tokio::test]
@@ -199,10 +275,7 @@ async fn max_instances_enforced() {
     let i1 = manager.create("session-1").await.unwrap();
     let i2 = manager.create("session-2").await.unwrap();
     let err = manager.create("session-3").await.unwrap_err();
-    assert_eq!(
-        err,
-        grokemon_instances::InstanceError::MaxInstancesReached
-    );
+    assert_eq!(err, grokemon_instances::InstanceError::MaxInstancesReached);
 
     // Cleanup
     let _ = manager.destroy(&i1.id).await;
@@ -216,20 +289,29 @@ async fn max_instances_returns_503_via_admin_api() {
     }
     let mut config = make_test_config();
     config.max_instances = 1;
-    let acl = AclService::new();
+    let acl = Arc::new(RwLock::new(AclService::new()));
     let backend = Arc::new(ProcessBackend::new(&config));
     let manager = Arc::new(InstanceManager::new(config, backend));
     let frame_hub = Arc::new(FrameHub::new());
     let input_log = Arc::new(InputLogBus::new());
     let stream_metrics = Arc::new(StreamMetrics::new());
-    let session_state = GatewayState::new(acl, Arc::new(StubCommands), frame_hub, input_log);
-    let admin_state = AdminState {
-        admin_token: TEST_ADMIN_TOKEN.to_string(),
-        manager: manager.clone(),
+    let session_state = GatewayState::with_acl(
+        acl.clone(),
+        Arc::new(StubCommands),
+        frame_hub.clone(),
+        input_log,
+    );
+    let admin_state = AdminState::new(
+        TEST_ADMIN_TOKEN.to_string(),
+        manager.clone(),
         stream_metrics,
-    };
-    let app: Router = app(session_state)
-        .nest("/admin", admin_routes::<ProcessBackend>().with_state(admin_state));
+        acl,
+        frame_hub,
+    );
+    let app: Router = app(session_state).nest(
+        "/admin",
+        admin_routes::<ProcessBackend>().with_state(admin_state),
+    );
 
     // First create should succeed.
     let first = app
@@ -370,10 +452,7 @@ async fn full_lifecycle_via_admin_api() {
     // checks in the gateway crate unit tests; here we only confirm the route
     // is mounted and reachable.
     let principal_token = info["principal_token"].as_str().unwrap().to_string();
-    let principal_session_id = info["principal_session_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let principal_session_id = info["principal_session_id"].as_str().unwrap().to_string();
     let screenshot = app
         .clone()
         .oneshot(
@@ -431,10 +510,7 @@ async fn full_lifecycle_via_admin_api() {
         .unwrap();
     let restart_info: serde_json::Value = serde_json::from_slice(&restart_body).unwrap();
     let restart_id = restart_info["id"].as_str().unwrap().to_string();
-    assert_ne!(
-        restart_id, id,
-        "restarted instance should receive a new id"
-    );
+    assert_ne!(restart_id, id, "restarted instance should receive a new id");
 
     // Final destroy after restart.
     let final_destroy = app
@@ -452,4 +528,51 @@ async fn full_lifecycle_via_admin_api() {
 
     // Manager is left empty.
     assert!(manager.list().await.is_empty());
+}
+
+#[tokio::test]
+async fn admin_created_principal_token_authorizes_session_route() {
+    let app = make_fake_command_app();
+
+    let create = app
+        .clone()
+        .oneshot(
+            http::Request::builder()
+                .method("POST")
+                .uri("/admin/instances")
+                .header("x-admin-token", TEST_ADMIN_TOKEN)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(create.into_body(), 4096)
+        .await
+        .unwrap();
+    let info: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    let principal_session_id = info["principal_session_id"]
+        .as_str()
+        .expect("admin create response includes principal_session_id");
+    let principal_token = info["principal_token"]
+        .as_str()
+        .expect("admin create response includes principal_token");
+
+    let command = app
+        .oneshot(
+            http::Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/sessions/{principal_session_id}/mgba-http/button/tap?button=A"
+                ))
+                .header("x-principal-token", principal_token)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(command.status(), StatusCode::BAD_GATEWAY);
 }
