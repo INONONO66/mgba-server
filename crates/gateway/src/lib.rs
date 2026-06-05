@@ -194,6 +194,11 @@ struct ButtonQuery {
     duration: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct PrincipalTokenQuery {
+    principal_token: Option<String>,
+}
+
 struct InputLogCommand {
     action: &'static str,
     button: String,
@@ -464,10 +469,19 @@ async fn session_stream_ws<C: SessionCommandService>(
     State(state): State<GatewayState<C>>,
     headers: HeaderMap,
     Path(session): Path<String>,
+    Query(query): Query<PrincipalTokenQuery>,
     ws: axum::extract::WebSocketUpgrade,
 ) -> Response {
     let session_id = SessionId::new(session.clone());
-    if let Err(error) = authorize(&state, &headers, &session_id, Permission::ViewStream).await {
+    if let Err(error) = authorize_with_query(
+        &state,
+        &headers,
+        query.principal_token.as_deref(),
+        &session_id,
+        Permission::ViewStream,
+    )
+    .await
+    {
         return auth_response(error);
     }
     let broadcast = state.broadcast.clone();
@@ -498,10 +512,19 @@ async fn input_log_ws<C: SessionCommandService>(
     State(state): State<GatewayState<C>>,
     headers: HeaderMap,
     Path(session): Path<String>,
+    Query(query): Query<PrincipalTokenQuery>,
     ws: axum::extract::WebSocketUpgrade,
 ) -> Response {
     let session_id = SessionId::new(session.clone());
-    if let Err(error) = authorize(&state, &headers, &session_id, Permission::ViewInputLogs).await {
+    if let Err(error) = authorize_with_query(
+        &state,
+        &headers,
+        query.principal_token.as_deref(),
+        &session_id,
+        Permission::ViewInputLogs,
+    )
+    .await
+    {
         return auth_response(error);
     }
     let input_log = state.input_log.clone();
@@ -784,7 +807,19 @@ async fn authorize<C>(
     session_id: &SessionId,
     permission: Permission,
 ) -> Result<PrincipalId, AuthError> {
-    let token = principal_token(headers).ok_or(AuthError::InvalidToken)?;
+    authorize_with_query(state, headers, None, session_id, permission).await
+}
+
+async fn authorize_with_query<C>(
+    state: &GatewayState<C>,
+    headers: &HeaderMap,
+    query_token: Option<&str>,
+    session_id: &SessionId,
+    permission: Permission,
+) -> Result<PrincipalId, AuthError> {
+    let token = principal_token(headers)
+        .or_else(|| query_token.filter(|token| !token.is_empty()).map(ToOwned::to_owned))
+        .ok_or(AuthError::InvalidToken)?;
     state
         .acl
         .read()
@@ -1296,6 +1331,59 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         assert!(commands.seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn authorize_with_query_accepts_session_token_without_headers() {
+        let (_app, _commands, token, _frame_hub, _input_log) =
+            fixture(Role::Viewer, "session-a").await;
+        let mut acl = AclService::new();
+        let principal = grokemon_auth::PrincipalId::new("principal-query");
+        acl.register_principal_token(principal.clone(), &token);
+        acl.grant(
+            principal.clone(),
+            SessionId::new("session-a"),
+            Role::Viewer,
+        );
+        let state = GatewayState::new(
+            acl,
+            Arc::new(FakeCommands::default()),
+            Arc::new(FrameHub::new()),
+            Arc::new(InputLogBus::new()),
+        );
+        let authorized = authorize_with_query(
+            &state,
+            &HeaderMap::new(),
+            Some(&token),
+            &SessionId::new("session-a"),
+            Permission::ViewStream,
+        )
+        .await;
+
+        assert_eq!(authorized, Ok(principal));
+    }
+
+    #[tokio::test]
+    async fn authorize_with_query_ignores_empty_query_token() {
+        let (_app, _commands, _token, _frame_hub, _input_log) =
+            fixture(Role::Viewer, "session-a").await;
+        let state = GatewayState::new(
+            AclService::new(),
+            Arc::new(FakeCommands::default()),
+            Arc::new(FrameHub::new()),
+            Arc::new(InputLogBus::new()),
+        );
+
+        let authorized = authorize_with_query(
+            &state,
+            &HeaderMap::new(),
+            Some(""),
+            &SessionId::new("session-a"),
+            Permission::ViewStream,
+        )
+        .await;
+
+        assert_eq!(authorized, Err(AuthError::InvalidToken));
     }
 
     #[tokio::test]

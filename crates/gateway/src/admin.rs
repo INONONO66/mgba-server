@@ -1,5 +1,6 @@
 use axum::{
     Json, Router,
+    body::Bytes,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
@@ -9,6 +10,7 @@ use grokemon_auth::{AclService, PrincipalId, Role, SessionId};
 use grokemon_instances::{InstanceBackend, InstanceError, InstanceManager};
 use grokemon_ipc::transport::{FrameConnection, RawFramePacket};
 use grokemon_streaming::{FrameHub, PixelFormat, RawFrame, StreamMetrics};
+use serde::Deserialize;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::{sync::RwLock, task::JoinHandle};
 
@@ -62,6 +64,11 @@ pub fn admin_routes<B: InstanceBackend>() -> Router<AdminState<B>> {
         .route("/metrics/streams", get(stream_metrics::<B>))
 }
 
+#[derive(Debug, Deserialize)]
+struct CreateInstanceRequest {
+    rom_path: Option<String>,
+}
+
 fn check_admin_token(headers: &HeaderMap, expected: &str) -> bool {
     headers
         .get("x-admin-token")
@@ -81,12 +88,23 @@ fn unauthorized() -> Response {
 async fn create_instance<B: InstanceBackend>(
     State(state): State<AdminState<B>>,
     headers: HeaderMap,
+    body: Bytes,
 ) -> Response {
     if !check_admin_token(&headers, &state.admin_token) {
         return unauthorized();
     }
+    let rom_path = match create_instance_rom_path(&body) {
+        Ok(rom_path) => rom_path,
+        Err(message) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": message })),
+            )
+                .into_response();
+        }
+    };
     let session_id = uuid::Uuid::new_v4().to_string();
-    match state.manager.create(session_id).await {
+    match state.manager.create_with_rom_path(session_id, rom_path).await {
         Ok(info) => {
             let principal_id = PrincipalId::new(&info.principal_session_id);
             let mut acl = state.acl.write().await;
@@ -122,6 +140,19 @@ async fn create_instance<B: InstanceBackend>(
             Json(serde_json::json!({ "error": error.to_string() })),
         )
             .into_response(),
+    }
+}
+
+fn create_instance_rom_path(body: &[u8]) -> Result<Option<String>, &'static str> {
+    if body.is_empty() {
+        return Ok(None);
+    }
+    let request: CreateInstanceRequest =
+        serde_json::from_slice(body).map_err(|_| "invalid JSON body")?;
+    match request.rom_path {
+        Some(path) if path.trim().is_empty() => Err("rom_path must be non-empty"),
+        Some(path) => Ok(Some(path)),
+        None => Ok(None),
     }
 }
 
@@ -251,10 +282,13 @@ mod tests {
         ManagedInstanceInfo, WorkerInfo,
     };
     use grokemon_ipc::transport::{FrameSocketServer, RawFramePacket};
+    use std::sync::Mutex;
     use tower::ServiceExt;
 
     #[derive(Default)]
-    struct FakeBackend;
+    struct FakeBackend {
+        created: Mutex<Vec<CreateInstanceOptions>>,
+    }
 
     #[async_trait]
     impl InstanceBackend for FakeBackend {
@@ -262,6 +296,7 @@ mod tests {
             &self,
             opts: CreateInstanceOptions,
         ) -> Result<WorkerInfo, InstanceError> {
+            self.created.lock().unwrap().push(opts.clone());
             Ok(WorkerInfo {
                 pid: 42,
                 socket_path: opts.socket_path,
@@ -284,6 +319,11 @@ mod tests {
     }
 
     fn make_app_with_max(max_instances: u16) -> (Router, String) {
+        let (app, token, _backend) = make_app_with_max_and_backend(max_instances);
+        (app, token)
+    }
+
+    fn make_app_with_max_and_backend(max_instances: u16) -> (Router, String, Arc<FakeBackend>) {
         let config = GatewayConfig {
             admin_token: "test-token".to_string(),
             max_instances,
@@ -291,14 +331,15 @@ mod tests {
             worker_socket_dir: "/tmp/test-workers".to_string(),
             ..GatewayConfig::default()
         };
-        let manager = Arc::new(InstanceManager::new(config, Arc::new(FakeBackend)));
+        let backend = Arc::new(FakeBackend::default());
+        let manager = Arc::new(InstanceManager::new(config, backend.clone()));
         let acl = Arc::new(RwLock::new(AclService::new()));
         let stream_metrics = Arc::new(StreamMetrics::new());
         let frame_hub = Arc::new(FrameHub::new());
         let state = AdminState::new("test-token", manager, stream_metrics, acl, frame_hub);
         let admin = admin_routes::<FakeBackend>().with_state(state);
         let app = Router::new().nest("/admin", admin);
-        (app, "test-token".to_string())
+        (app, "test-token".to_string(), backend)
     }
 
     async fn read_body(response: Response) -> String {
@@ -406,6 +447,65 @@ mod tests {
         let body = read_body(response).await;
         assert!(body.contains("\"id\""));
         assert!(body.contains("\"principal_token\""));
+    }
+
+    #[tokio::test]
+    async fn create_instance_uses_rom_path_from_json_body() {
+        let (app, token, backend) = make_app_with_max_and_backend(20);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/admin/instances")
+                    .header("x-admin-token", token)
+                    .body(Body::from(r#"{ "rom_path": "/roms/pokemon.gba" }"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let created = backend.created.lock().unwrap();
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0].rom_path.as_deref(), Some("/roms/pokemon.gba"));
+    }
+
+    #[tokio::test]
+    async fn create_instance_rejects_empty_rom_path() {
+        let (app, token, backend) = make_app_with_max_and_backend(20);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/admin/instances")
+                    .header("x-admin-token", token)
+                    .body(Body::from(r#"{ "rom_path": "" }"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(backend.created.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_instance_rejects_malformed_json_body() {
+        let (app, token, backend) = make_app_with_max_and_backend(20);
+        let response = app
+            .oneshot(
+                http::Request::builder()
+                    .method("POST")
+                    .uri("/admin/instances")
+                    .header("x-admin-token", token)
+                    .body(Body::from("{"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(backend.created.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

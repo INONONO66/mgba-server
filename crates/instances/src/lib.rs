@@ -120,6 +120,14 @@ impl<B: InstanceBackend> InstanceManager<B> {
         &self,
         session_id: impl Into<String>,
     ) -> Result<InstanceInfo, InstanceError> {
+        self.create_with_rom_path(session_id, None).await
+    }
+
+    pub async fn create_with_rom_path(
+        &self,
+        session_id: impl Into<String>,
+        rom_path: Option<String>,
+    ) -> Result<InstanceInfo, InstanceError> {
         {
             let mut pending = self.pending_creates.lock().await;
             let current = self.instances.read().await.len();
@@ -143,7 +151,7 @@ impl<B: InstanceBackend> InstanceManager<B> {
                     .to_string_lossy()
                     .into_owned(),
                 core_path: self.config.libretro_core_path.clone(),
-                rom_path: self.config.rom_path.clone(),
+                rom_path: rom_path.or_else(|| self.config.rom_path.clone()),
             })
             .await
         {
