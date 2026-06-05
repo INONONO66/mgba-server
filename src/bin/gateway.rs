@@ -35,6 +35,7 @@ async fn main() {
     let acl = Arc::new(RwLock::new(AclService::new()));
     let backend = Arc::new(ProcessBackend::new(&config));
     let manager = Arc::new(InstanceManager::new(config.clone(), backend));
+    manager.start_health_checks();
     let commands = Arc::new(IpcSessionCommandService::new(manager.clone()));
     let frame_hub = Arc::new(FrameHub::new());
     let input_log = Arc::new(InputLogBus::new());
